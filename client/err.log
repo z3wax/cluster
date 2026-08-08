@@ -1,0 +1,17 @@
+[t] start
+[t] netInit ok
+[t] dump ok: {"agreementAccepted":true,"agreementVersion":"1.0","id":"net_test_1","name":"t","os":"Windows","platform":"x64","spaceTotal":1000000}
+[t] before http_request
+[net] ulanish: host=127.0.0.1 port=8080 path=/api/nodes/register
+[net] connect...
+[net] connected, send...
+[net] head 161 bayt, body 133 bayt
+[net] send head = 161 (err 0)
+[net] send body = 133 (err 0)
+[net] recv...
+[net] recv done n=0 (err 0) total=398
+[net] socket yopildi
+[net] qaytmoqda status=200
+[t] after http_request status=200 err=[]
+[t] after time, 1s
+[t] before return

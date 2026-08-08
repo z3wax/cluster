@@ -1,0 +1,15 @@
+# SDrive Cluster gitignore
+/data/
+/backend/data/
+/*.exe
+/backend/*.exe
+/client/*.exe
+/client/test_net.exe
+/backend/web/client/*.exe
+/backend/web/client/*.dmg
+/backend/web/client/*.deb
+/backend/web/client/*.ipa
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
