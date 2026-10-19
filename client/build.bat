@@ -1,13 +1,22 @@
 @echo off
-rem SDrive Cluster — Windows static build script
-set GXX=C:\Users\HPPC~1\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin\g++.exe
-set B1=-B"C:/Users/HPPC~1/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/lib/gcc/x86_64-w64-mingw32/16.1.0/"
-set B2=-B"C:/Users/HPPC~1/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/x86_64-w64-mingw32/lib/"
+rem SDrive Cluster — Windows build (MinGW-w64 g++ PATH da bo'lishi kerak, masalan WinLibs yoki MSYS2)
+rem Natija: dist\sdrive-windows.exe va ..\backend\web\client\sdrive-windows.exe
+setlocal
+cd /d "%~dp0"
+where g++ >nul 2>nul || (echo [XATO] g++ topilmadi. MinGW-w64 ni o'rnating va PATH ga qo'shing. & exit /b 1)
+if not exist dist mkdir dist
 
-echo Compiling statically linked SDrive Client...
-%GXX% %B1% %B2% -O2 -std=c++17 -static -static-libgcc -static-libstdc++ -Isrc src/main.cpp src/config.cpp src/net.cpp src/storage.cpp src/platform.cpp src/server.cpp -lws2_32 -o sdrive.exe
-%GXX% %B1% %B2% -O2 -std=c++17 -static -static-libgcc -static-libstdc++ -Isrc src/test_net.cpp src/net.cpp -lws2_32 -o test_net.exe
+set FLAGS=-std=c++17 -O2 -static -static-libgcc -static-libstdc++ -D_WIN32_WINNT=0x0A00 -DWIN32_LEAN_AND_MEAN -DNOMINMAX -Isrc
+set LIBS=-lws2_32 -lwinhttp -lbcrypt -lshell32 -ladvapi32
+set CORE=src\config.cpp src\crypto.cpp src\net.cpp src\storage.cpp src\platform.cpp
 
-if exist sdrive.exe (
-  echo [OK] Statically compiled sdrive.exe ready!
-)
+echo Unit testlar build qilinmoqda...
+g++ %FLAGS% tests\test_main.cpp %CORE% %LIBS% -o dist\sdrive_tests.exe || exit /b 1
+dist\sdrive_tests.exe || (echo [XATO] unit testlar o'tmadi & exit /b 1)
+
+echo SDrive mijozi build qilinmoqda...
+g++ %FLAGS% -s -mwindows src\main.cpp src\agent.cpp src\server.cpp %CORE% %LIBS% -o dist\sdrive-windows.exe || exit /b 1
+
+if not exist ..\backend\web\client mkdir ..\backend\web\client
+copy /y dist\sdrive-windows.exe ..\backend\web\client\sdrive-windows.exe >nul
+echo [OK] dist\sdrive-windows.exe tayyor (veb-saytga ham joylandi)

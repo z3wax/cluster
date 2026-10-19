@@ -3,270 +3,222 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SDrive Cluster — Minimalist Cloud & Storage Infrastructure</title>
+<title>SDrive Cluster — Taqsimlangan bulutli xotira</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
 <nav class="nav">
   <div class="container nav-inner">
-    <a href="/" class="logo">
+    <a href="#overview" class="logo">
       <div class="logo-icon">⬡</div>
       <span>SDrive <b>Cluster</b></span>
     </a>
-    
-    <div class="nav-tabs">
-      <button class="nav-tab active" id="btn-tab-overview" onclick="switchTab('overview')">Asosiy</button>
-      <button class="nav-tab" id="btn-tab-nodes" onclick="switchTab('nodes')">Klaster Tugunlari (Nodes)</button>
-      <button class="nav-tab" id="btn-tab-files" onclick="switchTab('files')">Fayllar</button>
-      <button class="nav-tab" id="btn-tab-tasks" onclick="switchTab('tasks')">Vazifalar</button>
-      <button class="nav-tab" id="btn-tab-payouts" onclick="switchTab('payouts')">To'lovlar</button>
-      <button class="nav-tab" id="btn-tab-admin" onclick="switchTab('admin')">⚙ Admin & Simulyator</button>
+
+    <div class="nav-tabs" id="navTabs">
+      <a class="nav-tab" data-tab="overview" href="#overview">Asosiy</a>
+      <a class="nav-tab" data-tab="nodes" href="#nodes">Tugunlar</a>
+      <a class="nav-tab" data-tab="files" href="#files">Fayllar</a>
+      <a class="nav-tab" data-tab="tasks" href="#tasks">Vazifalar</a>
+      <a class="nav-tab" data-tab="payouts" href="#payouts">To'lovlar</a>
+      <a class="nav-tab" data-tab="sim" href="#sim">⚙ Simulyator</a>
     </div>
 
     <div class="nav-actions">
-      <a href="#download" class="btn btn-primary btn-sm">Yuklab olish</a>
+      <span class="badge hidden" id="adminBadge"><span class="dot dot-live"></span> Admin</span>
+      <button class="btn btn-outline btn-sm hidden" id="btnLogout">Chiqish</button>
+      <a href="#download" class="btn btn-primary btn-sm" id="btnDownloadNav">Yuklab olish</a>
     </div>
   </div>
 </nav>
 
 <div class="container">
 
-  <!-- TAB 1: OVERVIEW -->
-  <div id="tab-overview" class="tab-content" style="display: block;">
+  <!-- ASOSIY -->
+  <section id="tab-overview" class="tab-content">
     <header class="hero">
       <div class="hero-tag">
-        <span class="badge"><span class="dot dot-live"></span> Tarmoq Faol</span>
-        <span class="badge">30% Replikatsiya Kafolati</span>
+        <span class="badge"><span class="dot" id="netDot"></span> <span id="netState">Ulanmoqda...</span></span>
+        <span class="badge" id="ratioBadge">30% replikatsiya</span>
       </div>
-      <h1 class="hero-title">Desentralizatsiyalashgan bulutli xotira va hisoblash klasteri</h1>
-      <p class="hero-subtitle">SDrive Cluster foydalanuvchilarning bo'sh disk joylarini yagona taqsimlangan tarmog'iga birlashtiradi. Dasturni fonda ishlatib, tasdiqlangan onlayn vaqtingiz uchun doimiy daromad oling.</p>
+      <h1 class="hero-title">Taqsimlangan bulutli xotira klasteri</h1>
+      <p class="hero-subtitle">SDrive Cluster foydalanuvchilarning bo'sh disk joylarini yagona tarmoqqa birlashtiradi. Har bir fayl chunk'larga bo'linadi, SHA-256 bilan tekshiriladi va onlayn tugunlarning 30% iga shifrlangan holda nusxalanadi. Tugun uzilsa — nusxalar avtomatik boshqa tugunlarga ko'chiriladi.</p>
 
       <div class="stats-row">
         <div class="stat-item">
           <div class="stat-number" id="sNodes">0 / 0</div>
-          <div class="stat-label">Onlayn / Jami Tugunlar</div>
+          <div class="stat-label">Onlayn / Jami tugunlar</div>
         </div>
         <div class="stat-item">
-          <div class="stat-number" id="sSpace">0 GB</div>
-          <div class="stat-label">Jami Berilgan Xotira</div>
+          <div class="stat-number" id="sSpace">0 B</div>
+          <div class="stat-label">Ajratilgan xotira</div>
         </div>
         <div class="stat-item">
           <div class="stat-number" id="sFiles">0</div>
-          <div class="stat-label">Saqlangan Fayllar</div>
+          <div class="stat-label">Fayllar (sog'lom / jami)</div>
         </div>
         <div class="stat-item">
           <div class="stat-number" id="sPaid">$0.00</div>
-          <div class="stat-label">Jami To'langan Daromad</div>
+          <div class="stat-label">Jami to'langan</div>
         </div>
       </div>
+      <div class="meta-row" id="clusterMeta"></div>
     </header>
 
-    <!-- Calculator Section -->
-    <div style="margin: 48px 0;">
-      <div style="margin-bottom: 24px;">
-        <h2 style="font-size: 22px; font-weight: 800;">Tahminiy Daromad Kalkulyatori</h2>
-        <p style="color: var(--text-secondary); font-size: 14px;">Klasterga ajratilgan disk joyi va kunlik tarmoqdagi vaqtingiz bo'yicha daromadni hisoblang.</p>
+    <div class="section">
+      <div class="section-head">
+        <h2>Taxminiy daromad kalkulyatori</h2>
+        <p class="muted">To'lov haqiqatda saqlangan fayllar hajmi va tasdiqlangan onlayn vaqt bo'yicha hisoblanadi (shartnoma 4.1–4.3).</p>
       </div>
-
       <div class="card">
         <div class="calc-grid">
           <div>
             <div class="calc-input-group">
-              <div class="calc-label">
-                <span>Ajratiladigan disk joyi</span>
-                <span class="calc-val" id="gbLabel">100 GB</span>
-              </div>
-              <input type="range" id="gbRange" min="10" max="2000" step="10" value="100" oninput="updateCalc()">
+              <div class="calc-label"><span>Saqlanadigan ma'lumot hajmi</span><span class="calc-val" id="gbLabel">100 GB</span></div>
+              <input type="range" id="gbRange" min="10" max="2000" step="10" value="100">
             </div>
-
             <div class="calc-input-group">
-              <div class="calc-label">
-                <span>Kunlik onlayn vaqt</span>
-                <span class="calc-val" id="hrsLabel">24 soat</span>
-              </div>
-              <input type="range" id="hrsRange" min="1" max="24" step="1" value="24" oninput="updateCalc()">
+              <div class="calc-label"><span>Kunlik onlayn vaqt</span><span class="calc-val" id="hrsLabel">24 soat</span></div>
+              <input type="range" id="hrsRange" min="1" max="24" step="1" value="24">
             </div>
+            <p class="muted small" id="rateNote"></p>
           </div>
-
           <div class="calc-display">
-            <div style="font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em;">Oylik Tahminiy Daromad</div>
-            <div class="calc-amount-main" id="calcUsd">$3.60</div>
-            <div class="calc-amount-sub" id="calcUzs">~ 46,000 UZS</div>
+            <div class="label-upper">Oylik taxminiy daromad</div>
+            <div class="calc-amount-main" id="calcUsd">$0.00</div>
+            <div class="calc-amount-sub" id="calcUzs">~ 0 UZS</div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Download Section -->
-    <div id="download" style="margin: 48px 0;">
-      <div style="margin-bottom: 24px;">
-        <h2 style="font-size: 22px; font-weight: 800;">Dasturni Yuklab Oling</h2>
-        <p style="color: var(--text-secondary); font-size: 14px;">Windows, macOS, Linux va iOS uchun statik va xavfsiz versiyalar.</p>
+    <div id="download" class="section">
+      <div class="section-head">
+        <h2>Dasturni yuklab oling</h2>
+        <p class="muted">O'rnatilgandan so'ng brauzerda sozlash oynasi ochiladi: disk, joy hajmi va shartnomaga rozilik. Keyin dastur kompyuter yoqilishi bilan fon rejimida ishlaydi.</p>
       </div>
-
-      <div class="download-grid">
-        <a class="download-tile" href="/client/sdrive-windows.exe" download>
-          <div>
-            <div class="download-icon">🪟</div>
-            <div class="download-name">Windows</div>
-            <div class="download-desc">Windows 10 / 11 (x64) · .exe</div>
-          </div>
-          <button class="btn btn-primary btn-sm">Yuklab olish (.exe)</button>
-        </a>
-
-        <a class="download-tile" href="/client/sdrive-macos.dmg" download>
-          <div>
-            <div class="download-icon">🍎</div>
-            <div class="download-name">macOS</div>
-            <div class="download-desc">Intel & Apple Silicon · .dmg</div>
-          </div>
-          <button class="btn btn-outline btn-sm">Yuklab olish (.dmg)</button>
-        </a>
-
-        <a class="download-tile" href="/client/sdrive-linux.deb" download>
-          <div>
-            <div class="download-icon">🐧</div>
-            <div class="download-name">Linux</div>
-            <div class="download-desc">Ubuntu / Debian / Arch · .deb</div>
-          </div>
-          <button class="btn btn-outline btn-sm">Yuklab olish (.deb)</button>
-        </a>
-
-        <a class="download-tile" href="/client/sdrive-ios.ipa" download>
-          <div>
-            <div class="download-icon">📱</div>
-            <div class="download-name">iOS / iPadOS</div>
-            <div class="download-desc">iOS 15.0+ · .ipa</div>
-          </div>
-          <button class="btn btn-outline btn-sm">Yuklab olish (.ipa)</button>
-        </a>
-      </div>
-
-      <div style="margin-top: 24px;">
-        <button class="btn btn-outline btn-sm" onclick="openAgreementModal()">📜 Foydalanuvchi Shartnomasi (EULA)</button>
+      <div class="download-grid" id="downloadGrid"></div>
+      <div class="mt-24">
+        <button class="btn btn-outline btn-sm" id="btnAgreement">📜 Foydalanuvchi shartnomasi (EULA)</button>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- TAB 2: NODES (10+ SCALE MONITORING) -->
-  <div id="tab-nodes" class="tab-content" style="display: none; padding-top: 32px;">
+  <!-- ADMIN KIRISH -->
+  <section id="tab-login" class="tab-content">
+    <div class="card login-card">
+      <h2 class="card-title">🔐 Admin panelga kirish</h2>
+      <p class="muted">Tugunlar, fayllar, vazifalar va to'lovlarni boshqarish uchun admin token kerak. Token server ishga tushganda <span class="mono">data/admin_token</span> fayliga yoziladi (yoki <span class="mono">-admin-token</span> flag bilan beriladi).</p>
+      <form id="loginForm" class="login-form">
+        <input type="password" id="loginToken" placeholder="Admin token" autocomplete="current-password" required>
+        <button class="btn btn-primary" type="submit">Kirish</button>
+      </form>
+      <div class="msg" id="loginMsg"></div>
+    </div>
+  </section>
+
+  <!-- TUGUNLAR -->
+  <section id="tab-nodes" class="tab-content admin-only">
     <div class="admin-toolbar">
       <div>
-        <h2 style="font-size: 20px; font-weight: 800;">Klaster Tugunlari Monitoringi (10+ Nodes)</h2>
-        <p style="font-size: 13px; color: var(--text-secondary);">Klasterdagi barcha ulangan kompyuterlar ro'yxati va holati.</p>
+        <h2>Klaster tugunlari</h2>
+        <p class="muted small" id="nodesSummary"></p>
       </div>
-
       <div class="search-box">
         <span>🔍</span>
-        <input type="text" id="searchNodes" placeholder="Tugun ID, OS yoki nom bo'yicha qidiruv..." oninput="renderNodes()">
+        <input type="text" id="searchNodes" placeholder="ID, nom yoki OS bo'yicha qidirish...">
       </div>
     </div>
+    <div class="table-wrap"><table id="tNodes"></table></div>
+  </section>
 
-    <div class="table-wrap">
-      <table id="tNodes"></table>
-    </div>
-  </div>
-
-  <!-- TAB 3: FILES STORAGE & UPLOAD -->
-  <div id="tab-files" class="tab-content" style="display: none; padding-top: 32px;">
-    
-    <!-- Upload Box Widget -->
+  <!-- FAYLLAR -->
+  <section id="tab-files" class="tab-content admin-only">
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">📤 Klasterga Fayl Yuklash (Web File Upload)</h2>
-          <p style="font-size: 13px; color: var(--text-secondary); margin-top: 4px;">Fayl avtomatik ravishda 2 MBlik chunklarga bo'linadi va onlayn tugunlarga ko'paytiriladi.</p>
+          <h2 class="card-title">📤 Klasterga fayl yuklash</h2>
+          <p class="muted small mt-4" id="uploadHint">Fayl chunk'larga bo'linadi va onlayn tugunlarning 30% iga nusxalanadi.</p>
         </div>
       </div>
-
-      <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-        <input type="file" id="filePicker" style="display: none;" onchange="uploadFileWeb(this)">
-        <button class="btn btn-primary" onclick="$('#filePicker').click()">📁 Faylni Tanlash va Yuklash</button>
-        <span id="uploadStatus" style="font-size: 13px; font-weight: 600; color: var(--text-secondary);"></span>
+      <div class="upload-row">
+        <input type="file" id="filePicker" class="hidden">
+        <button class="btn btn-primary" id="btnPick">📁 Faylni tanlash va yuklash</button>
+        <div class="progress hidden" id="uploadProgress"><div class="progress-bar" id="uploadBar"></div></div>
+        <span class="msg" id="uploadStatus"></span>
       </div>
     </div>
 
-    <div style="margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
-      <h3 style="font-size: 16px; font-weight: 700;">Saqlangan Fayllar</h3>
-      <button class="btn btn-outline btn-sm" onclick="loadDash()">🔄 Yangilash</button>
+    <div class="list-head">
+      <h3>Saqlangan fayllar</h3>
+      <button class="btn btn-outline btn-sm" id="btnRefresh">🔄 Yangilash</button>
     </div>
+    <div class="table-wrap"><table id="tFiles"></table></div>
+  </section>
 
-    <div class="table-wrap">
-      <table id="tFiles"></table>
+  <!-- VAZIFALAR -->
+  <section id="tab-tasks" class="tab-content admin-only">
+    <div class="section-head">
+      <h2>Replikatsiya va tiklash vazifalari</h2>
+      <p class="muted small">Nusxalash, tugunda yo'qolgan nusxani qayta yuklash, server nusxasini tugundan tiklash va ortiqcha nusxalarni o'chirish. Oxirgi 300 ta vazifa ko'rsatiladi.</p>
     </div>
-  </div>
+    <div class="meta-row" id="taskCounts"></div>
+    <div class="table-wrap"><table id="tTasks"></table></div>
+  </section>
 
-  <!-- TAB 4: REPLICATION TASKS -->
-  <div id="tab-tasks" class="tab-content" style="display: none; padding-top: 32px;">
-    <div style="margin-bottom: 24px;">
-      <h2 style="font-size: 20px; font-weight: 800;">Replikatsiya va Ta'mirlash Vazifalari</h2>
-      <p style="font-size: 13px; color: var(--text-secondary);">Oflayn bo'lgan tugunlardagi fayllarni qayta tiklash jarayoni.</p>
+  <!-- TO'LOVLAR -->
+  <section id="tab-payouts" class="tab-content admin-only">
+    <div class="section-head">
+      <h2>To'lovlar (payout) tarixi</h2>
+      <p class="muted small">Payout oy oxirida olinadi (6.1). Pulni olmasdan dastur o'chirilsa, balans yo'qotiladi (6.2).</p>
     </div>
+    <div class="table-wrap"><table id="tPayouts"></table></div>
+  </section>
 
-    <div class="table-wrap">
-      <table id="tTasks"></table>
-    </div>
-  </div>
-
-  <!-- TAB 5: PAYOUTS -->
-  <div id="tab-payouts" class="tab-content" style="display: none; padding-top: 32px;">
-    <div style="margin-bottom: 24px;">
-      <h2 style="font-size: 20px; font-weight: 800;">To'lovlar va Payoutlar Tarixi</h2>
-      <p style="font-size: 13px; color: var(--text-secondary);">EULA 6.2 bandiga binoan oylik tasdiqlangan to'lovlar hisobi.</p>
-    </div>
-
-    <div class="table-wrap">
-      <table id="tPayouts"></table>
-    </div>
-  </div>
-
-  <!-- TAB 6: ADMIN PANEL & SIMULATOR -->
-  <div id="tab-admin" class="tab-content" style="display: none; padding-top: 32px;">
+  <!-- SIMULYATOR -->
+  <section id="tab-sim" class="tab-content admin-only">
     <div class="card">
       <div class="card-header">
         <div>
-          <h2 class="card-title">⚡ Klaster Simulyatori (10+ Tugun Testi)</h2>
-          <p style="font-size: 13px; color: var(--text-secondary); margin-top: 4px;">Bir nechta tugunlarni klasterga birdaniga ulab, 10-100 ta tugunli yuklamalarni jonli sinovdan o'tkazish.</p>
+          <h2 class="card-title">⚡ Klaster simulyatori</h2>
+          <p class="muted small mt-4">Virtual tugunlar haqiqiy mijoz protokolida ishlaydi: ro'yxatdan o'tadi, heartbeat yuboradi, chunk'larni yuklab SHA-256 bilan tekshiradi, auditlarga javob beradi. Ularni to'xtatib, klasterning o'z-o'zini tiklashini kuzating.</p>
         </div>
+        <span class="badge" id="simState">–</span>
       </div>
-
-      <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-        <button class="btn btn-primary" onclick="simulateNodes(10)">+ 10 Ta Tugun Qo'shish (Test)</button>
-        <button class="btn btn-outline" onclick="simulateNodes(50)">+ 50 Ta Tugun Qo'shish (Multi-Node)</button>
-        <button class="btn btn-outline" onclick="simulateNodes(100)">+ 100 Ta Tugun Qo'shish (Scale Test)</button>
+      <div class="btn-row">
+        <button class="btn btn-primary" data-sim="start" data-count="10">+ 10 tugun</button>
+        <button class="btn btn-outline" data-sim="start" data-count="50">+ 50 tugun</button>
+        <button class="btn btn-outline" data-sim="start" data-count="100">+ 100 tugun</button>
       </div>
+      <div class="btn-row">
+        <button class="btn btn-outline" data-sim="offline" data-count="3">⏻ 3 ta tugunni uzish</button>
+        <button class="btn btn-outline" data-sim="online">↺ Hammasini qayta ulash</button>
+        <button class="btn btn-outline" id="btnReconcile">⟳ Replikatsiyani hozir tekshirish</button>
+        <button class="btn btn-danger" data-sim="remove">🗑 Simulyator tugunlarini o'chirish</button>
+      </div>
+      <div class="msg" id="simMsg"></div>
     </div>
-  </div>
+  </section>
 
 </div>
 
-<!-- Modal -->
 <div class="modal-overlay" id="agreeModal">
   <div class="modal-content">
     <div class="modal-header">
-      <h3 style="font-size: 16px; font-weight: 700;">Foydalanuvchi Shartnomasi (EULA)</h3>
-      <button class="btn btn-outline btn-sm" onclick="closeAgreementModal()">&times;</button>
+      <h3>Foydalanuvchi shartnomasi (EULA) <span class="muted small" id="agreeVer"></span></h3>
+      <button class="btn btn-outline btn-sm" id="btnCloseModal">&times;</button>
     </div>
-    <div class="modal-body" id="modalText">
-      Yuklanmoqda...
-    </div>
+    <div class="modal-body" id="modalText">Yuklanmoqda...</div>
   </div>
 </div>
 
 <footer class="footer">
-  <div class="container" style="display: flex; justify-content: space-between; align-items: center;">
-    <div>© 2026 SDrive Cluster · All rights reserved.</div>
-    <div>
-      <a href="javascript:void(0)" onclick="openAgreementModal()" style="color: var(--text-secondary); text-decoration: none;">Shartnoma</a>
-    </div>
+  <div class="container footer-inner">
+    <div>© 2026 SDrive Cluster</div>
+    <a href="#overview" id="footerAgreement">Shartnoma</a>
   </div>
 </footer>
 
 <script src="app.js"></script>
-<script>
-updateCalc();
-</script>
-
 </body>
 </html>

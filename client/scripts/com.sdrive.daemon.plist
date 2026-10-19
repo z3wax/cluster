@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Namuna: mijoz shartnoma qabul qilinganda shu LaunchAgent'ni o'zi yaratadi
+     (~/Library/LaunchAgents/com.sdrive.daemon.plist). KeepAlive ishlatilmaydi —
+     aks holda "Dasturni o'chirish" dan keyin launchd uni qayta ishga tushirardi. -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -6,12 +9,10 @@
     <string>com.sdrive.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Applications/SDrive.app/Contents/MacOS/sdrive</string>
+        <string>/Applications/SDrive Cluster.app/Contents/MacOS/sdrive</string>
         <string>--background</string>
     </array>
     <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
     <true/>
 </dict>
 </plist>

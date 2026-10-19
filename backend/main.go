@@ -2,135 +2,141 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
-	"path/filepath"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
-func findWebDir(root string) string {
-	candidates := []string{
-		filepath.Join(root, "web"),
-		filepath.Join(root, "backend", "web"),
-		"web",
-		"backend/web",
-		"../backend/web",
-	}
-	for _, c := range candidates {
-		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
-			abs, _ := filepath.Abs(c)
-			return abs
-		}
-	}
-	return filepath.Join(root, "web")
+// Config — server sozlamalari (flag'lar orqali o'zgartiriladi)
+type Config struct {
+	Addr          string
+	DataDir       string
+	WebDir        string // bo'sh bo'lsa: ./web yoki binarga joylangan nusxa
+	DownloadsDir  string // mijoz dasturlari (/client/...)
+	AgreementPath string
+	AdminToken    string
+	TLSCert       string
+	TLSKey        string
+
+	HeartbeatInterval time.Duration // mijoz heartbeat oralig'i
+	OfflineTimeout    time.Duration // shu vaqt heartbeat kelmasa — uzilish (internet/elektr)
+	RepairDelay       time.Duration // oflayn tugundagi nusxa shu vaqtdan keyin boshqa tugunga ko'chiriladi
+	ReconcileInterval time.Duration // replikatsiya menejeri sikli
+	AuditInterval     time.Duration // har bir tugunni saqlash isboti (proof-of-storage) bilan tekshirish oralig'i
+	ScrubInterval     time.Duration // server chunk'larini to'liq SHA-256 tekshiruvi
+	TaskTimeout       time.Duration // bajarilmagan vazifa shu vaqtdan keyin boshqa tugunga beriladi
+	ActiveWindow      time.Duration // 30% hisobi shu vaqt ichida ko'ringan tugunlar bo'yicha
+
+	ReplicaRatio       float64 // 30% replikatsiya (shartnoma 2.3)
+	RateCentsPerGBHour float64 // 1 GB / 1 soat uchun to'lov (sent)
+	ChunkSize          int64
+	MaxUploadBytes     int64
+	PayoutAnytime      bool // test uchun: payout oynasini cheklamaslik
+	PayoutWindowDays   int  // oy oxiridagi payout oynasi (kun)
+	MaxSimNodes        int
 }
 
-func findDataDir(dir string) string {
-	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
-		abs, _ := filepath.Abs(dir)
-		return abs
+func defaultConfig() Config {
+	return Config{
+		Addr:               ":8080",
+		DataDir:            "data",
+		HeartbeatInterval:  30 * time.Second,
+		OfflineTimeout:     90 * time.Second,
+		RepairDelay:        5 * time.Minute,
+		ReconcileInterval:  10 * time.Second,
+		AuditInterval:      10 * time.Minute,
+		ScrubInterval:      6 * time.Hour,
+		TaskTimeout:        6 * time.Hour,
+		ActiveWindow:       24 * time.Hour,
+		ReplicaRatio:       0.30,
+		RateCentsPerGBHour: 0.05,
+		ChunkSize:          4 << 20, // 4 MiB
+		MaxUploadBytes:     16 << 30,
+		PayoutWindowDays:   3,
+		MaxSimNodes:        500,
 	}
-	candidates := []string{
-		dir,
-		filepath.Join("backend", dir),
-		filepath.Join("..", dir),
-	}
-	for _, c := range candidates {
-		if fi, err := os.Stat(c); err == nil && fi.IsDir() {
-			abs, _ := filepath.Abs(c)
-			return abs
-		}
-	}
-	os.MkdirAll(dir, 0o755)
-	abs, _ := filepath.Abs(dir)
-	return abs
 }
 
 func main() {
-	addr := flag.String("addr", ":8080", "server manzili")
-	dataDirFlag := flag.String("data", "data", "ma'lumotlar papkasi")
+	cfg := defaultConfig()
+	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "server manzili (host:port)")
+	flag.StringVar(&cfg.DataDir, "data", cfg.DataDir, "ma'lumotlar papkasi (db.json, chunks)")
+	flag.StringVar(&cfg.WebDir, "web", "", "statik veb papka (bo'sh: ./web, topilmasa binarga joylangan nusxa)")
+	flag.StringVar(&cfg.DownloadsDir, "downloads", "", "mijoz dasturlari papkasi, /client/ orqali beriladi (bo'sh: <web>/client)")
+	flag.StringVar(&cfg.AgreementPath, "agreement", "", "SHARTNOMA.md yo'li (bo'sh: avtomatik qidiriladi)")
+	flag.StringVar(&cfg.AdminToken, "admin-token", os.Getenv("SDRIVE_ADMIN_TOKEN"), "admin token (bo'sh: <data>/admin_token dan o'qiladi yoki yaratiladi)")
+	flag.StringVar(&cfg.TLSCert, "tls-cert", "", "HTTPS sertifikati (PEM); -tls-key bilan birga")
+	flag.StringVar(&cfg.TLSKey, "tls-key", "", "HTTPS kaliti (PEM)")
+	flag.DurationVar(&cfg.HeartbeatInterval, "heartbeat", cfg.HeartbeatInterval, "mijoz heartbeat oralig'i")
+	flag.DurationVar(&cfg.OfflineTimeout, "offline-timeout", cfg.OfflineTimeout, "heartbeat kelmasa oflayn deb hisoblash vaqti")
+	flag.DurationVar(&cfg.RepairDelay, "repair-delay", cfg.RepairDelay, "oflayn tugundagi nusxani boshqa tugunga ko'chirishdan oldin kutish")
+	flag.DurationVar(&cfg.ReconcileInterval, "reconcile", cfg.ReconcileInterval, "replikatsiya menejeri oralig'i")
+	flag.DurationVar(&cfg.AuditInterval, "audit", cfg.AuditInterval, "tugun saqlash isboti tekshiruvi oralig'i")
+	flag.DurationVar(&cfg.ScrubInterval, "scrub", cfg.ScrubInterval, "server chunk'larini to'liq tekshirish oralig'i")
+	flag.Float64Var(&cfg.RateCentsPerGBHour, "rate", cfg.RateCentsPerGBHour, "tarif: 1 GB saqlangan fayl uchun 1 soatda to'lanadigan sent")
+	flag.Int64Var(&cfg.MaxUploadBytes, "max-upload", cfg.MaxUploadBytes, "maksimal yuklanadigan fayl hajmi (bayt)")
+	flag.BoolVar(&cfg.PayoutAnytime, "payout-anytime", false, "payout'ni oy oxirini kutmasdan ruxsat berish (test)")
 	flag.Parse()
 
-	root, err := os.Getwd()
+	if cfg.OfflineTimeout <= cfg.HeartbeatInterval {
+		log.Fatalf("-offline-timeout (%s) -heartbeat (%s) dan katta bo'lishi kerak", cfg.OfflineTimeout, cfg.HeartbeatInterval)
+	}
+
+	s, err := NewServer(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	webDir := findWebDir(root)
-	dataDir := findDataDir(*dataDirFlag)
-
-	dbPath := filepath.Join(dataDir, "db.json")
-	db, err := OpenDB(dbPath)
+	ln, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {
-		log.Fatalf("db ochishda xato: %v", err)
+		log.Fatalf("%s tinglab bo'lmadi: %v", cfg.Addr, err)
 	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	useTLS := cfg.TLSCert != "" || cfg.TLSKey != ""
+	scheme := "http"
+	if useTLS {
+		if cfg.TLSCert == "" || cfg.TLSKey == "" {
+			log.Fatal("-tls-cert va -tls-key birga berilishi kerak")
+		}
+		scheme = "https"
+		s.sim.insecureTLS() // simulyator tugunlari serverga 127.0.0.1 orqali ulanadi
+	}
+	s.baseURL = fmt.Sprintf("%s://127.0.0.1:%d", scheme, port)
 
-	chunksDir := filepath.Join(dataDir, "chunks")
-	if err := os.MkdirAll(chunksDir, 0o755); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	s.Start(ctx)
+
+	srv := &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	go func() {
+		<-ctx.Done()
+		log.Printf("to'xtatilmoqda...")
+		s.sim.stopAll()
+		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		srv.Shutdown(sctx)
+	}()
+
+	log.Printf("SDrive Cluster server ishga tushdi: %s://localhost:%d", scheme, port)
+	if useTLS {
+		err = srv.ServeTLS(ln, cfg.TLSCert, cfg.TLSKey)
+	} else {
+		err = srv.Serve(ln)
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
-
-	// o'chirilgan tugunlarni skanerlash (offline aniqlash)
-	go sweeper(db)
-
-	mux := http.NewServeMux()
-	a := &api{db: db, data: dataDir}
-	a.routes(mux)
-
-	// statik frontend
-	log.Printf("Statik Web Papkasi: %s", webDir)
-	mux.Handle("/", http.FileServer(http.Dir(webDir)))
-
-	// CORS (dashboard va mijozlardan ochiq kirish uchun)
-	handler := cors(mux)
-
-	log.Printf("SDrive Cluster server ishga tushdi: http://localhost%s", *addr)
-	log.Printf("DB: %s | Chunks: %s", dbPath, chunksDir)
-	if err := http.ListenAndServe(*addr, handler); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func sweeper(db *DB) {
-	tick := time.NewTicker(30 * time.Second)
-	for range tick.C {
-		changed := false
-		db.mu.Lock()
-		ts := time.Now().Unix()
-		for _, n := range db.Nodes {
-			if n.Online && ts-n.LastSeen > int64(HeartbeatTimeout.Seconds()) {
-				// Internet/elektr uzilishi — onlayn vaqt to'xtatiladi
-				n.Online = false
-				changed = true
-			}
-		}
-		db.mu.Unlock()
-		if changed {
-			db.Save()
-		}
-	}
-}
-
-func cors(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		ctx := context.WithValue(r.Context(), "root", mustCwd())
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-func mustCwd() string {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "."
-	}
-	return wd
+	s.Close()
+	log.Printf("server to'xtadi, ma'lumotlar saqlandi")
 }

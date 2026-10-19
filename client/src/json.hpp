@@ -6,8 +6,9 @@
 #include <variant>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <cmath>
-#include <sstream>
+#include <cctype>
 
 class Json {
 public:
@@ -20,7 +21,9 @@ public:
     Json(bool b) : v_(b) {}
     Json(double d) : v_(d) {}
     Json(int i) : v_(static_cast<double>(i)) {}
-    Json(int64_t i) : v_(static_cast<double>(i)) {}
+    Json(long i) : v_(static_cast<double>(i)) {}
+    Json(long long i) : v_(static_cast<double>(i)) {}
+    Json(unsigned i) : v_(static_cast<double>(i)) {}
     Json(const char* s) : v_(std::string(s)) {}
     Json(const std::string& s) : v_(s) {}
     Json(const Array& a) : v_(a) {}
@@ -37,11 +40,8 @@ public:
 
     bool asBool(bool dflt = false) const { return isBool() ? std::get<bool>(v_) : dflt; }
     double asNum(double dflt = 0) const { return isNum() ? std::get<double>(v_) : dflt; }
-    int64_t asInt(int64_t dflt = 0) const { return isNum() ? (int64_t)std::get<double>(v_) : dflt; }
-    const std::string& asStr(const std::string& dflt = "") const {
-        static const std::string empty;
-        return isStr() ? std::get<std::string>(v_) : dflt;
-    }
+    int64_t asInt(int64_t dflt = 0) const { return isNum() ? (int64_t)std::llround(std::get<double>(v_)) : dflt; }
+    std::string asStr(const std::string& dflt = "") const { return isStr() ? std::get<std::string>(v_) : dflt; }
     const Array& asArr() const { static const Array e; return isArr() ? std::get<Array>(v_) : e; }
     const Object& asObj() const { static const Object e; return isObj() ? std::get<Object>(v_) : e; }
 
@@ -59,6 +59,12 @@ public:
         return std::get<Object>(v_)[key];
     }
 
+    bool has(const std::string& key) const { return isObj() && std::get<Object>(v_).count(key) > 0; }
+
+    void erase(const std::string& key) {
+        if (isObj()) std::get<Object>(v_).erase(key);
+    }
+
     void push(const Json& j) {
         if (v_.index() != Arr) v_ = Array();
         std::get<Array>(v_).push_back(j);
@@ -72,13 +78,13 @@ public:
 
     // ---- Parse ----
     static Json parse(const std::string& s, bool* ok = nullptr) {
-        bool bad = false;
+        bool good = true;
         size_t i = 0;
-        Json j = parseValue(s, i, &bad);
+        Json j = parseValue(s, i, good, 0);
         while (i < s.size() && ws(s[i])) i++;
-        if (!bad && i < s.size()) bad = true;
-        if (ok) *ok = !bad;
-        return j;
+        if (i < s.size()) good = false;
+        if (ok) *ok = good;
+        return good ? j : Json();
     }
 
 private:
@@ -86,100 +92,135 @@ private:
 
     static bool ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
 
-    static Json parseValue(const std::string& s, size_t& i, bool* ok) {
+    static Json parseValue(const std::string& s, size_t& i, bool& ok, int depth) {
+        if (depth > 64) { ok = false; return Json(); }
         while (i < s.size() && ws(s[i])) i++;
-        if (i >= s.size()) { if (ok) *ok = false; return Json(); }
+        if (i >= s.size()) { ok = false; return Json(); }
         char c = s[i];
-        if (c == '{') return parseObj(s, i, ok);
-        if (c == '[') return parseArr(s, i, ok);
+        if (c == '{') return parseObj(s, i, ok, depth);
+        if (c == '[') return parseArr(s, i, ok, depth);
         if (c == '"') return parseStr(s, i, ok);
-        if (c == 't' || c == 'f') return parseBool(s, i, ok);
-        if (c == 'n') { if (s.compare(i, 4, "null") == 0) { i += 4; return Json(); } if (ok) *ok = false; return Json(); }
+        if (s.compare(i, 4, "true") == 0) { i += 4; return Json(true); }
+        if (s.compare(i, 5, "false") == 0) { i += 5; return Json(false); }
+        if (s.compare(i, 4, "null") == 0) { i += 4; return Json(); }
         return parseNum(s, i, ok);
     }
 
-    static Json parseObj(const std::string& s, size_t& i, bool* ok) {
+    static Json parseObj(const std::string& s, size_t& i, bool& ok, int depth) {
         i++; // {
         Object o;
-        while (i < s.size()) {
+        while (ok && i < s.size()) {
             while (i < s.size() && ws(s[i])) i++;
             if (i < s.size() && s[i] == '}') { i++; return Json(o); }
-            Json k = parseValue(s, i, ok);
-            if (!k.isStr()) { if (ok) *ok = false; return Json(); }
+            if (i >= s.size() || s[i] != '"') break;
+            Json k = parseStr(s, i, ok);
             while (i < s.size() && ws(s[i])) i++;
-            if (i < s.size() && s[i] == ':') i++;
-            Json v = parseValue(s, i, ok);
+            if (i >= s.size() || s[i] != ':') break;
+            i++;
+            Json v = parseValue(s, i, ok, depth + 1);
+            if (!ok) break;
             o[k.asStr()] = v;
             while (i < s.size() && ws(s[i])) i++;
             if (i < s.size() && s[i] == ',') { i++; continue; }
             if (i < s.size() && s[i] == '}') { i++; return Json(o); }
             break;
         }
-        if (ok) *ok = false;
+        ok = false;
         return Json();
     }
 
-    static Json parseArr(const std::string& s, size_t& i, bool* ok) {
+    static Json parseArr(const std::string& s, size_t& i, bool& ok, int depth) {
         i++; // [
         Array a;
-        while (i < s.size()) {
+        while (ok && i < s.size()) {
             while (i < s.size() && ws(s[i])) i++;
             if (i < s.size() && s[i] == ']') { i++; return Json(a); }
-            a.push_back(parseValue(s, i, ok));
+            a.push_back(parseValue(s, i, ok, depth + 1));
+            if (!ok) break;
             while (i < s.size() && ws(s[i])) i++;
             if (i < s.size() && s[i] == ',') { i++; continue; }
             if (i < s.size() && s[i] == ']') { i++; return Json(a); }
             break;
         }
-        if (ok) *ok = false;
+        ok = false;
         return Json();
     }
 
-    static Json parseStr(const std::string& s, size_t& i, bool* ok) {
+    static void putUtf8(std::string& out, uint32_t cp) {
+        if (cp < 0x80) out += (char)cp;
+        else if (cp < 0x800) { out += (char)(0xC0 | (cp >> 6)); out += (char)(0x80 | (cp & 0x3F)); }
+        else if (cp < 0x10000) {
+            out += (char)(0xE0 | (cp >> 12)); out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F));
+        } else {
+            out += (char)(0xF0 | (cp >> 18)); out += (char)(0x80 | ((cp >> 12) & 0x3F));
+            out += (char)(0x80 | ((cp >> 6) & 0x3F)); out += (char)(0x80 | (cp & 0x3F));
+        }
+    }
+
+    static bool hex4(const std::string& s, size_t i, uint32_t& v) {
+        if (i + 4 > s.size()) return false;
+        v = 0;
+        for (size_t k = 0; k < 4; k++) {
+            char c = s[i + k];
+            v <<= 4;
+            if (c >= '0' && c <= '9') v |= (uint32_t)(c - '0');
+            else if (c >= 'a' && c <= 'f') v |= (uint32_t)(c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') v |= (uint32_t)(c - 'A' + 10);
+            else return false;
+        }
+        return true;
+    }
+
+    static Json parseStr(const std::string& s, size_t& i, bool& ok) {
         i++; // "
         std::string out;
         while (i < s.size()) {
             char c = s[i++];
             if (c == '"') return Json(out);
-            if (c == '\\' && i < s.size()) {
-                char e = s[i++];
-                switch (e) {
-                    case 'n': out += '\n'; break;
-                    case 't': out += '\t'; break;
-                    case 'r': out += '\r'; break;
-                    case '\\': out += '\\'; break;
-                    case '"': out += '"'; break;
-                    case '/': out += '/'; break;
-                    case 'u': {
-                        if (i + 4 <= s.size()) {
-                            out += (char)std::strtol(s.substr(i, 4).c_str(), nullptr, 16);
-                            i += 4;
+            if (c != '\\') { out += c; continue; }
+            if (i >= s.size()) break;
+            char e = s[i++];
+            switch (e) {
+                case 'n': out += '\n'; break;
+                case 't': out += '\t'; break;
+                case 'r': out += '\r'; break;
+                case 'b': out += '\b'; break;
+                case 'f': out += '\f'; break;
+                case '\\': out += '\\'; break;
+                case '"': out += '"'; break;
+                case '/': out += '/'; break;
+                case 'u': {
+                    uint32_t cp;
+                    if (!hex4(s, i, cp)) { ok = false; return Json(); }
+                    i += 4;
+                    if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 <= s.size() && s[i] == '\\' && s[i + 1] == 'u') {
+                        uint32_t lo;
+                        if (hex4(s, i + 2, lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
+                            cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                            i += 6;
                         }
-                        break;
                     }
-                    default: out += '\\'; out += e; // noma'lum escape — aslini saqlaymiz
+                    putUtf8(out, cp);
+                    break;
                 }
-            } else out += c;
+                default: ok = false; return Json();
+            }
         }
-        if (ok) *ok = false;
+        ok = false;
         return Json();
     }
 
-    static Json parseBool(const std::string& s, size_t& i, bool* ok) {
-        if (s.compare(i, 4, "true") == 0) { i += 4; return Json(true); }
-        if (s.compare(i, 5, "false") == 0) { i += 5; return Json(false); }
-        if (ok) *ok = false;
-        return Json();
-    }
-
-    static Json parseNum(const std::string& s, size_t& i, bool* ok) {
+    static Json parseNum(const std::string& s, size_t& i, bool& ok) {
         size_t start = i;
-        while (i < s.size() && (std::isdigit((unsigned char)s[i]) || s[i] == '-' || s[i] == '+' ||
+        if (i < s.size() && s[i] == '-') i++;
+        while (i < s.size() && (std::isdigit((unsigned char)s[i]) || s[i] == '+' || s[i] == '-' ||
                                 s[i] == '.' || s[i] == 'e' || s[i] == 'E'))
             i++;
         std::string tok = s.substr(start, i - start);
-        if (tok.empty()) { if (ok) *ok = false; return Json(); }
-        return Json(std::strtod(tok.c_str(), nullptr));
+        char* end = nullptr;
+        double d = tok.empty() ? 0 : std::strtod(tok.c_str(), &end);
+        if (tok.empty() || end != tok.c_str() + tok.size()) { ok = false; return Json(); }
+        return Json(d);
     }
 
     void dumpInto(std::string& out) const {
@@ -187,22 +228,28 @@ private:
             case Null: out += "null"; break;
             case Bool: out += std::get<bool>(v_) ? "true" : "false"; break;
             case Num: {
-                std::ostringstream ss;
                 double d = std::get<double>(v_);
-                if (d == (int64_t)d && std::abs(d) < 1e15) ss << (int64_t)d;
-                else ss << d;
-                out += ss.str();
+                char buf[32];
+                if (!std::isfinite(d)) { out += "null"; break; }
+                if (d == std::floor(d) && std::fabs(d) < 9e15) snprintf(buf, sizeof(buf), "%lld", (long long)d);
+                else snprintf(buf, sizeof(buf), "%.17g", d);
+                out += buf;
                 break;
             }
             case Str: {
                 out += '"';
                 for (char c : std::get<std::string>(v_)) {
+                    unsigned char u = (unsigned char)c;
                     if (c == '"') out += "\\\"";
                     else if (c == '\\') out += "\\\\";
                     else if (c == '\n') out += "\\n";
                     else if (c == '\r') out += "\\r";
                     else if (c == '\t') out += "\\t";
-                    else out += c;
+                    else if (u < 0x20) {
+                        char buf[8];
+                        snprintf(buf, sizeof(buf), "\\u%04x", u);
+                        out += buf;
+                    } else out += c;
                 }
                 out += '"';
                 break;

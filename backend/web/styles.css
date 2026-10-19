@@ -232,6 +232,16 @@ body {
   background: #71717a;
 }
 
+.dot-warn {
+  background: #f59e0b;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.5);
+}
+
+.dot-err {
+  background: #f43f5e;
+  box-shadow: 0 0 8px rgba(244, 63, 94, 0.5);
+}
+
 /* Hero Header */
 .hero {
   padding: 72px 0 48px;
@@ -398,10 +408,13 @@ tr:hover td {
   gap: 24px;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .calc-grid { grid-template-columns: 1fr; }
   .hero-title { font-size: 32px; }
-  .nav-tabs { display: none; }
+  .nav-inner { flex-wrap: wrap; gap: 10px; }
+  .nav-tabs { order: 3; width: 100%; overflow-x: auto; }
+  .nav-tab { white-space: nowrap; }
+  .search-box { width: 100%; }
 }
 
 .calc-input-group {
@@ -556,3 +569,87 @@ input[type="range"] {
   font-size: 13px;
   color: var(--text-muted);
 }
+
+/* ---------- Yordamchi klasslar ---------- */
+.hidden { display: none !important; }
+.tab-content { padding-top: 32px; }
+#tab-overview { padding-top: 0; }
+.section { margin: 48px 0; }
+.section-head { margin-bottom: 24px; }
+.section-head h2, .admin-toolbar h2 { font-size: 20px; font-weight: 800; letter-spacing: -0.01em; }
+.muted { color: var(--text-secondary); }
+.small { font-size: 12px; }
+.strong { font-weight: 700; color: var(--text-primary); }
+.ok { color: #22c55e; }
+.err { color: #f43f5e; }
+.mt-4 { margin-top: 4px; }
+.mt-24 { margin-top: 24px; }
+.label-upper { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; }
+.empty { text-align: center; color: var(--text-secondary); padding: 32px !important; }
+
+.tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #312e81;
+  color: #c7d2fe;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.meta-row { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.meta b { color: var(--text-primary); }
+
+.msg { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+.msg-ok { color: #22c55e; }
+.msg-err { color: #f43f5e; }
+
+.upload-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.progress {
+  width: 220px;
+  height: 6px;
+  background: var(--border-color);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-bar { height: 100%; width: 0; background: #ffffff; transition: width 0.15s ease; }
+
+.list-head { margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+.list-head h3 { font-size: 16px; font-weight: 700; }
+.btn-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.actions { display: flex; gap: 8px; }
+
+.login-card { max-width: 520px; margin: 32px auto; }
+.login-card p { margin: 8px 0 20px; font-size: 13px; }
+.login-form { display: flex; gap: 12px; margin-bottom: 12px; }
+.login-form input, .search-box input[type="text"] { font-family: var(--font-sans); }
+.login-form input {
+  flex: 1;
+  background: var(--bg-dark);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  outline: none;
+}
+.login-form input:focus { border-color: var(--border-active); }
+
+.download-tile.disabled { opacity: 0.5; cursor: default; }
+.download-tile.disabled:hover { border-color: var(--border-color); background: var(--bg-card); }
+
+.footer-inner { display: flex; justify-content: space-between; align-items: center; }
+.footer a { color: var(--text-secondary); text-decoration: none; }
+a.nav-tab { display: inline-block; }
+.modal-header h3 { font-size: 16px; font-weight: 700; }

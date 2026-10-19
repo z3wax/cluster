@@ -1,26 +1,26 @@
 # SDrive Cluster o'rnatish skripti (Windows, PowerShell)
-# Foydalanish: powershell -ExecutionPolicy Bypass -File install_windows.ps1
-param([string]$ServerUrl = "http://127.0.0.1:8080", [string]$ExePath = "")
+# Foydalanish: powershell -ExecutionPolicy Bypass -File install_windows.ps1 -ServerUrl http://server:8080
+param([string]$ServerUrl = "", [string]$ExePath = "")
 
 $ErrorActionPreference = "Stop"
 
-if (-not $ExePath) { $ExePath = "$PSScriptRoot\sdrive.exe" }
-if (-not (Test-Path $ExePath)) { throw "sdrive.exe topilmadi: $ExePath" }
+if (-not $ExePath) {
+    $ExePath = Join-Path $PSScriptRoot "sdrive-windows.exe"
+    if (-not (Test-Path $ExePath)) { $ExePath = Join-Path $PSScriptRoot "..\dist\sdrive-windows.exe" }
+}
+if (-not (Test-Path $ExePath)) { throw "sdrive-windows.exe topilmadi: $ExePath" }
 
-# 1. Dastur papkasiga nusxalash
-$installDir = "$env:LOCALAPPDATA\SDriveCluster"
+# 1. Dastur papkasiga nusxalash (oldingi nusxa ishlayotgan bo'lsa to'xtatiladi)
+$installDir = Join-Path $env:LOCALAPPDATA "SDriveCluster"
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-Copy-Item $ExePath "$installDir\sdrive.exe" -Force
+Get-Process sdrive -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$installDir*" } | Stop-Process -Force
+$target = Join-Path $installDir "sdrive.exe"
+Copy-Item $ExePath $target -Force
+Write-Host "[OK] O'rnatildi: $target"
 
-# 2. Avtostart (Run key) — kompyuter yoqilishi bilan ishga tushadi
-$runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-Set-ItemProperty -Path $runKey -Name "SDriveCluster" -Value "`"$installDir\sdrive.exe`" --background"
-
-# 3. Server URL ni config orqali berish (birinchi ishga tushishda)
-Write-Host "[OK] SDrive Cluster o'rnatildi"
-Write-Host "Server: $ServerUrl"
-Write-Host "Boshqaruv: http://127.0.0.1:48673"
-
-# 4. Ishga tushirish
-Start-Process "$installDir\sdrive.exe"
-Write-Host "[OK] Dastur ishga tushirildi — brauzerda sozlash oynasi ochiladi"
+# 2. Ishga tushirish. Avtostart (HKCU\...\Run) shartnoma qabul qilingandan keyin
+#    dasturning o'zi tomonidan yoziladi (shartnoma 9.3: roziliksiz fon ishi boshlanmaydi).
+$procArgs = @()
+if ($ServerUrl) { $procArgs += @("--server", $ServerUrl) }
+if ($procArgs.Count -gt 0) { Start-Process $target -ArgumentList $procArgs } else { Start-Process $target }
+Write-Host "[OK] Dastur ishga tushirildi — brauzerda sozlash oynasi ochiladi: http://127.0.0.1:48673"

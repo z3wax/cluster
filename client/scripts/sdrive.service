@@ -1,12 +1,16 @@
+# SDrive Cluster — systemd foydalanuvchi xizmati (grafik muhitsiz serverlar uchun)
+# O'rnatish:  systemctl --user enable --now sdrive.service
+# Birinchi sozlash: brauzerda http://127.0.0.1:48673 (yoki SSH tunnel orqali) ochiladi.
 [Unit]
-Description=SDrive Cluster daemon
-After=network.target
+Description=SDrive Cluster mijozi
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/sdrive --background
+ExecStart=/usr/bin/sdrive --background
 Restart=on-failure
 RestartSec=10
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

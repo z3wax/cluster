@@ -1,1 +1,0 @@
-RESULT status=200 error=[] body={"heartbeatIntervalMs":30000,"nodeId":"net_test_1","ok":true,"rateCentsPerGBHour":0.05,"replicaRatio":0.3,"serverTime":1

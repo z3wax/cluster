@@ -1,14 +1,30 @@
 # SDrive Cluster gitignore
+
+# server ma'lumotlari (db.json, chunks, admin_token, simulyator)
 /data/
 /backend/data/
-/*.exe
-/backend/*.exe
-/client/*.exe
-/client/test_net.exe
-/backend/web/client/*.exe
-/backend/web/client/*.dmg
-/backend/web/client/*.deb
-/backend/web/client/*.ipa
+/backend/sdrive-server
+/backend/sdrive-server.exe
+/backend/backend
+*.exe~
+
+# mijoz build va paketlar
+/client/build/
+/client/build-*/
+/dist/
+/client/dist/
+*.exe
+*.dmg
+*.deb
+*.ipa
+*.tar.gz
+
+# veb-saytdan beriladigan mijoz dasturlari (build skriptlari shu yerga nusxalaydi)
+/backend/web/client/
+
+# vaqtinchalik
+*.pid
+*.log
 .venv/
 __pycache__/
 *.pyc

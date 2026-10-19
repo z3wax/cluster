@@ -1,199 +1,149 @@
 #include "app.h"
 #include "net.h"
-#include "storage.h"
 #include "platform.h"
-#include "json.hpp"
 #include <chrono>
-#include <thread>
-#include <iostream>
+#include <csignal>
+#include <cstdio>
 #include <cstring>
-#include <atomic>
-
-using namespace std::chrono_literals;
+#include <ctime>
+#include <iostream>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
-static std::atomic<bool> g_running{true};
+using namespace std::chrono_literals;
 
-// ---------- server bilan aloqa ----------
-static HttpResp apiCall(const std::string& server, const std::string& method,
-                        const std::string& path, const std::string& body = "") {
-    return http_request(method, server + path, body);
+static AppState* g_state = nullptr;
+
+static void onSignal(int) {
+    if (g_state) g_state->running = false;
 }
 
-static bool g_registered = false;
-
-// ro'yxatdan o'tish (register) — bir marta yoki server node'ni unitganda
-static bool ensureRegistered(const Config& cfg) {
-    if (g_registered) return true;
-    Json req;
-    req["id"] = cfg.nodeId;
-    req["name"] = "PC-" + (cfg.nodeId.size() >= 4 ? cfg.nodeId.substr(cfg.nodeId.size() - 4) : cfg.nodeId);
-    req["os"] =
-#ifdef _WIN32
-        "Windows";
-#elif defined(__APPLE__)
-        "macOS";
-#else
-        "Linux";
-#endif
-    req["platform"] = "x64";
-    req["spaceTotal"] = (double)cfg.quotaBytes;
-    req["agreementVersion"] = "1.0";
-    req["agreementAccepted"] = cfg.agreementAccepted;
-    HttpResp r = apiCall(cfg.serverUrl, "POST", "/api/nodes/register", req.dump());
-    if (r.ok()) {
-        g_registered = true;
-        return true;
-    }
-    return false;
+static void usage() {
+    std::cout << "SDrive Cluster mijozi " << SDRIVE_VERSION << "\n\n"
+              << "Foydalanish: sdrive [parametrlar]\n"
+              << "  --server URL        klaster serveri (masalan http://server:8080)\n"
+              << "  --ui-port N         lokal boshqaruv paneli porti (standart 48673)\n"
+              << "  --config-dir DIR    sozlamalar papkasi\n"
+              << "  --background        fon rejimi (avtostart): brauzer ochilmaydi\n"
+              << "  --no-browser        brauzerni avtomatik ochmaslik\n"
+              << "  --version           versiyani ko'rsatish\n";
 }
 
-// heartbeat — har 30 soniyada
-static void heartbeat(const Config& cfg, AppState& st) {
-    Json req;
-    req["id"] = cfg.nodeId;
-    req["spaceUsed"] = (double)sdriveUsedBytes(cfg.sdriveDir);
-    HttpResp r = apiCall(cfg.serverUrl, "POST", "/api/nodes/heartbeat", req.dump());
-    std::lock_guard<std::mutex> lk(st.m);
-    if (r.ok()) {
-        st.online = true;
-        st.lastError.clear();
-        Json j = Json::parse(r.body);
-        st.tasksDue = (int)j["tasksDue"].asInt(0);
-        st.earningsCents = j["earningsCents"].asNum(0);
-        st.uptimeSec = j["verifiedUptime"].asInt(0);
-    } else {
-        st.online = false;
-        st.lastError = r.error;
-        if (r.status == 404) {
-            g_registered = false;
-        }
-    }
-}
-
-// navbatdagi vazifalarni bajarish (chunk yuklab olish + saqlash)
-static void processTasks(const Config& cfg) {
-    std::string server = cfg.serverUrl;
-    HttpResp r = apiCall(server, "GET", "/api/nodes/" + cfg.nodeId + "/tasks");
-    if (!r.ok()) return;
-    Json j = Json::parse(r.body);
-    const auto& tasks = j["tasks"].asArr();
-    if (tasks.empty()) return;
-
-    LocalIndex idx;
-    idx.load(cfg.sdriveDir);
-
-    for (const auto& t : tasks) {
-        std::string taskId = t["id"].asStr();
-        std::string fileId = t["fileId"].asStr();
-        std::string fname = t["fileId"].asStr();
-        const auto& chunks = t["chunks"].asArr();
-
-        bool allOk = true;
-        for (const auto& c : chunks) {
-            int ci = (int)c["index"].asInt();
-            int64_t csize = c["size"].asInt();
-            // allaqachon mavjud bo'lsa o'tkazib yuboramiz
-            if (chunkOk(cfg.sdriveDir, fileId, ci, csize, cfg.nodeId)) continue;
-            HttpResp cr = apiCall(server, "GET", "/api/files/" + fileId + "/chunks/" + std::to_string(ci));
-            if (!cr.ok() || cr.body.size() != (size_t)csize) {
-                allOk = false;
-                continue;
-            }
-            if (!storeChunk(cfg.sdriveDir, fileId, ci, cr.body, cfg.nodeId)) {
-                allOk = false;
-                continue;
-            }
-            // SDrive hajmi cheklovi
-            if (sdriveUsedBytes(cfg.sdriveDir) > cfg.quotaBytes) {
-                allOk = false;
-                break;
-            }
-        }
-        if (allOk) {
-            std::vector<ChunkInfo> infos;
-            for (const auto& c : chunks) infos.push_back({(int)c["index"].asInt(), c["size"].asInt()});
-            idx.addFile(cfg.sdriveDir, fileId, fname, infos);
-            apiCall(server, "POST", "/api/nodes/" + cfg.nodeId + "/tasks/" + taskId + "/done");
-        }
-    }
-}
-
-// foydalanuvchi o'chirib tashlagan fayllarni qayta yuklab olish
-static void repairScan(const Config& cfg) {
-    LocalIndex idx;
-    idx.load(cfg.sdriveDir);
-    auto missing = findMissingFiles(cfg.sdriveDir, idx, cfg.nodeId);
-    if (missing.empty()) return;
-    for (const auto& fid : missing) {
-        Json req;
-        req["fileId"] = fid;
-        apiCall(cfg.serverUrl, "POST", "/api/nodes/" + cfg.nodeId + "/repair", req.dump());
-    }
-}
-
-// ---------- main ----------
 int main(int argc, char** argv) {
-    netInit();
+    bool background = false, noBrowser = false;
+    std::string serverArg;
+    int uiPortArg = 0;
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        auto next = [&](std::string& out) {
+            if (i + 1 >= argc) {
+                std::cerr << a << " uchun qiymat kerak\n";
+                exit(2);
+            }
+            out = argv[++i];
+        };
+        if (a == "--background") background = true;
+        else if (a == "--no-browser") noBrowser = true;
+        else if (a == "--server") next(serverArg);
+        else if (a == "--ui-port") {
+            std::string v;
+            next(v);
+            uiPortArg = atoi(v.c_str());
+        } else if (a == "--config-dir") {
+            std::string v;
+            next(v);
+            setConfigDirOverride(v);
+        } else if (a == "--version") {
+            std::cout << SDRIVE_VERSION << "\n";
+            return 0;
+        } else if (a == "--help" || a == "-h") {
+            usage();
+            return 0;
+        } else {
+            std::cerr << "noma'lum parametr: " << a << "\n";
+            usage();
+            return 2;
+        }
+    }
 
-    AppState st;
-    loadConfig(st.cfg);
-    saveConfig(st.cfg);
-
-    // Windowsda konsol oynasini yashirish (--background)
 #ifdef _WIN32
-    if (argc > 1 && std::string(argv[1]) == "--background") {
+    if (background) {
         HWND h = GetConsoleWindow();
         if (h) ShowWindow(h, SW_HIDE);
     }
 #endif
-
-    startLocalServer(st);
-
-    // birinchi marta: brauzerni ochamiz (sozlash oynasi)
-    if (!st.cfg.setupDone || !st.cfg.agreementAccepted) {
-        std::thread([] { std::this_thread::sleep_for(700ms); openBrowser("http://127.0.0.1:48673/"); }).detach();
+    if (!netInit()) {
+        std::cerr << "tarmoq ishga tushmadi\n";
+        return 1;
     }
 
-    std::cout << "SDrive Cluster mijoz ishga tushdi" << std::endl;
-    std::cout << "Boshqaruv paneli: http://127.0.0.1:48673/" << std::endl;
-    std::cout << "Node ID: " << st.cfg.nodeId << std::endl;
-    std::cout << "Server: " << st.cfg.serverUrl << std::endl;
-
-    // avtostart (faqat --background rejimida)
-    if (argc > 1 && std::string(argv[1]) == "--background") {
-        std::string err;
-        installAutostart(currentExePath(), err);
+    static AppState st;
+    g_state = &st;
+    st.background = background;
+    loadConfig(st.cfg);
+    if (st.cfg.state == "uninstalled") {
+        // Dastur o'chirilgandan keyin qayta ishga tushirildi — yangi o'rnatish
+        resetForReinstall(st.cfg);
+        logf("[sdrive] avvalgi o'rnatish o'chirilgan edi — yangi sozlash boshlanadi");
     }
-
-    int scanCounter = 0;
-    while (g_running.load()) {
-        fprintf(stderr, "[sdrive] loop iteration\n");
-        // Eslatma: mutexni uzoq ushlab turmang — UI server ham st.m ishlatadi
-        Config cur;
-        {
-            std::lock_guard<std::mutex> lk(st.m);
-            cur = st.cfg;
+    if (st.cfg.agreementAccepted && st.cfg.agreementVersion.empty()) st.cfg.agreementVersion = "1.0"; // 1.x config
+    if (!serverArg.empty()) {
+        while (!serverArg.empty() && serverArg.back() == '/') serverArg.pop_back();
+        if (serverArg != st.cfg.serverUrl) {
+            st.cfg.serverUrl = serverArg;
+            st.cfg.token.clear();
         }
-        if (cur.state != "running" || !cur.setupDone || !cur.agreementAccepted) {
-            fprintf(stderr, "[sdrive] state=%s kutish\n", cur.state.c_str());
-            std::this_thread::sleep_for(2s);
-            continue;
-        }
-        fprintf(stderr, "[sdrive] register boshlanmoqda\n");
-        ensureRegistered(cur);
-        fprintf(stderr, "[sdrive] heartbeat boshlanmoqda\n");
-        heartbeat(cur, st);
-        fprintf(stderr, "[sdrive] heartbeat tugadi online=%d\n", (int)st.online);
-        processTasks(cur);
-        fprintf(stderr, "[sdrive] tasks tugadi\n");
-        if (++scanCounter % 10 == 0) repairScan(cur); // har ~5 daqiqada
-        std::this_thread::sleep_for(30s);
     }
+    if (uiPortArg > 0 && uiPortArg < 65536) st.cfg.uiPort = uiPortArg;
+    saveConfig(st.cfg);
+
+    std::string url = "http://127.0.0.1:" + std::to_string(st.cfg.uiPort) + "/";
+    std::string err;
+    if (!startLocalServer(st, st.cfg.uiPort, err)) {
+        // Bitta kompyuterda faqat bitta nusxa ishlaydi
+        logf("[sdrive] %s", err.c_str());
+        if (!background && !noBrowser) openBrowser(url);
+        return 0;
+    }
+
+    if (st.cfg.setupDone) {
+        if (!ensureSdrive(st.cfg.sdriveDir, platformId() == "windows" ? st.cfg.driveLetter : "", err))
+            logf("[sdrive] SDrive diski: %s", err.c_str());
+        if (!st.storage.open(st.cfg.sdriveDir, st.cfg.storageKey, err)) logf("[sdrive] xotira: %s", err.c_str());
+        st.usedBytes = st.storage.usedBytes();
+    }
+
+    std::signal(SIGINT, onSignal);
+    std::signal(SIGTERM, onSignal);
+
+    logf("[sdrive] SDrive Cluster %s ishga tushdi", SDRIVE_VERSION);
+    logf("[sdrive] Boshqaruv paneli: %s", url.c_str());
+    logf("[sdrive] Tugun: %s | Server: %s", st.cfg.nodeId.c_str(), st.cfg.serverUrl.c_str());
+
+    if ((!st.cfg.setupDone || !st.cfg.agreementAccepted) && !background && !noBrowser) {
+        std::thread([url] {
+            std::this_thread::sleep_for(500ms);
+            openBrowser(url);
+        }).detach();
+    }
+
+    startAgent(st);
+    while (st.running) {
+        std::this_thread::sleep_for(200ms);
+        int64_t ex = st.exitAt.load();
+        if (ex > 0 && (int64_t)time(nullptr) >= ex) st.running = false;
+    }
+    logf("[sdrive] to'xtatilmoqda...");
+    stopAgent(st);
     stopLocalServer();
+    if (st.uninstalling) st.storage.wipe(); // oqimlar to'xtagach — kech yozilgan chunk ham qolmasin
+    {
+        std::lock_guard<std::mutex> lk(st.m);
+        saveConfig(st.cfg);
+    }
     netCleanup();
     return 0;
 }
