@@ -29,6 +29,11 @@ static void usage() {
               << "  --config-dir DIR    sozlamalar papkasi\n"
               << "  --background        fon rejimi (avtostart): brauzer ochilmaydi\n"
               << "  --no-browser        brauzerni avtomatik ochmaslik\n"
+              << "  --compute           GPU/CPU hisoblash tuguni sifatida qo'shilish\n"
+              << "  --compute-engine E  inference dvigateli: auto | ollama | llama.cpp | echo\n"
+              << "  --compute-models M  modellar ro'yxati (vergul bilan; echo yoki cheklash uchun)\n"
+              << "  --compute-parallel N  bir vaqtda nechta inference ishi\n"
+              << "  --no-compute        hisoblashni o'chirish\n"
               << "  --version           versiyani ko'rsatish\n";
 }
 
@@ -36,6 +41,9 @@ int main(int argc, char** argv) {
     bool background = false, noBrowser = false;
     std::string serverArg;
     int uiPortArg = 0;
+    bool computeFlag = false, computeOff = false;
+    std::string computeEngineArg, computeModelsArg;
+    int computeParArg = 0;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         auto next = [&](std::string& out) {
@@ -48,7 +56,15 @@ int main(int argc, char** argv) {
         if (a == "--background") background = true;
         else if (a == "--no-browser") noBrowser = true;
         else if (a == "--server") next(serverArg);
-        else if (a == "--ui-port") {
+        else if (a == "--compute") computeFlag = true;
+        else if (a == "--no-compute") computeOff = true;
+        else if (a == "--compute-engine") next(computeEngineArg);
+        else if (a == "--compute-models") next(computeModelsArg);
+        else if (a == "--compute-parallel") {
+            std::string v;
+            next(v);
+            computeParArg = atoi(v.c_str());
+        } else if (a == "--ui-port") {
             std::string v;
             next(v);
             uiPortArg = atoi(v.c_str());
@@ -98,6 +114,19 @@ int main(int argc, char** argv) {
         }
     }
     if (uiPortArg > 0 && uiPortArg < 65536) st.cfg.uiPort = uiPortArg;
+
+    // Hisoblash (GPU/CPU) klasteri — flag yoki muhit o'zgaruvchilari
+    if (const char* v = getenv("SDRIVE_COMPUTE")) st.cfg.computeEnabled = std::string(v) == "1" || std::string(v) == "true";
+    if (const char* v = getenv("SDRIVE_COMPUTE_ENGINE")) st.cfg.computeEngine = v;
+    if (const char* v = getenv("SDRIVE_COMPUTE_MODELS")) st.cfg.computeModels = v;
+    if (const char* v = getenv("SDRIVE_COMPUTE_PARALLEL")) st.cfg.computeMaxParallel = atoi(v);
+    if (const char* v = getenv("SDRIVE_OLLAMA_URL")) st.cfg.ollamaUrl = v;
+    if (const char* v = getenv("SDRIVE_LLAMA_URL")) st.cfg.llamaUrl = v;
+    if (computeFlag) st.cfg.computeEnabled = true;
+    if (computeOff) st.cfg.computeEnabled = false;
+    if (!computeEngineArg.empty()) st.cfg.computeEngine = computeEngineArg;
+    if (!computeModelsArg.empty()) st.cfg.computeModels = computeModelsArg;
+    if (computeParArg > 0) st.cfg.computeMaxParallel = computeParArg;
     saveConfig(st.cfg);
 
     std::string url = "http://127.0.0.1:" + std::to_string(st.cfg.uiPort) + "/";

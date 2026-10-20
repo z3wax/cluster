@@ -37,7 +37,7 @@ const ago = (ts, now) => {
 const badge = (kind, text) => `<span class="badge"><span class="dot dot-${kind}"></span>${esc(text)}</span>`;
 const emptyRow = (cols, text) => `<tr><td colspan="${cols}" class="empty">${esc(text)}</td></tr>`;
 
-const ADMIN_TABS = ['nodes', 'files', 'tasks', 'payouts', 'sim'];
+const ADMIN_TABS = ['nodes', 'files', 'tasks', 'payouts', 'compute', 'sim'];
 const UZS_PER_USD = 12800;
 
 const state = { admin: false, info: null, dash: null, tab: 'overview' };
@@ -182,6 +182,7 @@ async function refreshAdmin() {
     renderTasks();
     renderPayouts();
     if (state.tab === 'sim') loadSim();
+    if (state.tab === 'compute') loadCompute();
   } catch (e) { /* 401 bo'lsa setAdmin(false) chaqirilgan */ }
 }
 
@@ -407,6 +408,119 @@ async function simAction(btn) {
   }
 }
 
+// ---------------- AI hisoblash ----------------
+
+const GPU_BADGE = g => g && g.present
+  ? `<span class="badge"><span class="dot dot-live"></span>${esc(g.name || 'GPU')}${g.vramBytes ? ' · ' + fmtB(g.vramBytes) : ''} (${esc(g.backend || '')})</span>`
+  : '<span class="muted small">CPU</span>';
+
+let computeData = null;
+
+async function loadCompute() {
+  try {
+    const d = await api('GET', '/api/compute/workers');
+    computeData = d;
+    $('#computeMeta').innerHTML = [
+      `Hisoblash tugunlari: <b>${esc(d.workers.filter(w => w.online).length)}</b> onlayn / ${esc(d.workers.length)}`,
+      `GPU tugunlar: <b>${esc(d.workers.filter(w => w.online && w.gpu && w.gpu.present).length)}</b>`,
+      `Modellar: <b>${esc(d.models.length)}</b>`,
+      `Navbatdagi so'rovlar: <b>${esc(d.queued)}</b>`,
+    ].map(x => `<span class="meta">${x}</span>`).join('');
+
+    const sel = $('#chatModel');
+    const cur = sel.value;
+    sel.innerHTML = d.models.map(m => `<option>${esc(m)}</option>`).join('') ||
+      '<option value="">(model yo\'q)</option>';
+    if (d.models.includes(cur)) sel.value = cur;
+    $('#chatSend').disabled = d.models.length === 0;
+
+    $('#tCompute').innerHTML = `
+      <thead><tr><th>Tugun</th><th>OS</th><th>Dvigatel</th><th>GPU / CPU</th><th>RAM</th>
+        <th>Modellar</th><th>Holat</th><th>Yuk</th></tr></thead>
+      <tbody>${d.workers.length === 0 ? emptyRow(8, 'Hisoblash tuguni yo\'q — mijozni --compute bilan ishga tushiring')
+        : d.workers.map(w => `
+        <tr>
+          <td class="mono strong">${esc(w.id)}</td>
+          <td>${esc(w.os || '—')}</td>
+          <td><span class="badge">${esc((w.engines || []).join(', ') || '—')}</span></td>
+          <td>${GPU_BADGE(w.gpu)}${w.cpuCores ? ` <span class="muted small">${esc(w.cpuCores)} yadro</span>` : ''}</td>
+          <td class="mono">${fmtB(w.ramBytes)}</td>
+          <td class="small">${(w.models || []).map(m => esc(m)).join('<br>') || '—'}</td>
+          <td>${badge(w.online ? 'live' : 'off', w.online ? 'Onlayn' : 'Oflayn')}</td>
+          <td class="mono">${esc(w.running)} / ${esc(w.maxParallel)}</td>
+        </tr>`).join('')}
+      </tbody>`;
+
+    const origin = location.origin;
+    $('#apiBase').textContent = origin + '/v1/chat/completions';
+    $('#curlExample').textContent =
+      `curl ${origin}/v1/chat/completions \\\n` +
+      `  -H "Authorization: Bearer <ADMIN-TOKEN yoki -compute-keys>" \\\n` +
+      `  -H "Content-Type: application/json" \\\n` +
+      `  -d '{"model":"${d.models[0] || 'gemma:2b'}","messages":[{"role":"user","content":"Salom"}]}'`;
+  } catch (e) { /* 401 bo'lsa setAdmin(false) */ }
+}
+
+async function sendChat() {
+  const model = $('#chatModel').value;
+  const text = $('#chatInput').value.trim();
+  if (!model || !text) return;
+  const out = $('#chatOut');
+  const meta = $('#chatMeta');
+  $('#chatSend').disabled = true;
+  $('#chatInput').value = '';
+  out.innerHTML = `<div class="chat-q">${esc(text)}</div><div class="chat-a" id="chatA"><span class="muted">…</span></div>`;
+  const ans = $('#chatA');
+  meta.textContent = 'Klasterga yuborilmoqda...';
+  const t0 = Date.now();
+  let content = '';
+  try {
+    const r = await fetch('/api/compute/jobs?stream=1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'sdrive' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: text }] }),
+    });
+    if (!r.ok || !r.body) {
+      let msg = 'HTTP ' + r.status;
+      try { msg = (await r.json()).error || msg; } catch (e) { /* */ }
+      ans.innerHTML = `<span class="err">❌ ${esc(msg)}</span>`;
+      meta.textContent = '';
+      return;
+    }
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', ev = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (line.startsWith('event: ')) ev = line.slice(7).trim();
+        else if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          if (data === '[DONE]') continue;
+          try {
+            const j = JSON.parse(data);
+            if (ev === 'token') { content += j.token; ans.textContent = content; }
+            else if (ev === 'error') { ans.innerHTML = `<span class="err">❌ ${esc(j.error || 'xato')}</span>`; }
+            else if (ev === 'done' && !content) { content = j.result || ''; ans.textContent = content; }
+          } catch (e) { /* */ }
+        }
+      }
+    }
+    meta.textContent = `Javob ${((Date.now() - t0) / 1000).toFixed(1)}s da klaster tugunida bajarildi`;
+  } catch (e) {
+    ans.innerHTML = `<span class="err">❌ ${esc(e.message)}</span>`;
+    meta.textContent = '';
+  } finally {
+    $('#chatSend').disabled = false;
+  }
+}
+
 // ---------------- Hodisalar ----------------
 
 function bind() {
@@ -447,6 +561,9 @@ function bind() {
     if (del) return deleteFile(del.dataset.delete, del.dataset.name);
   });
   $$('[data-sim]').forEach(b => b.addEventListener('click', () => simAction(b)));
+  $('#btnRefreshCompute').addEventListener('click', loadCompute);
+  $('#chatSend').addEventListener('click', sendChat);
+  $('#chatInput').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
   $('#btnReconcile').addEventListener('click', async () => {
     try {
       await api('POST', '/api/admin/reconcile', {});

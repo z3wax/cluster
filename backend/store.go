@@ -45,6 +45,30 @@ type Node struct {
 	AuditsFailed      int      `json:"auditsFailed"`
 	Simulated         bool     `json:"simulated,omitempty"`
 	UninstalledAt     int64    `json:"uninstalledAt,omitempty"`
+
+	// Hisoblash (GPU/CPU) klasteri — tugun ixtiyoriy ravishda yoqadi (shartnoma 1.1, 2.5)
+	Compute *ComputeInfo `json:"compute,omitempty"`
+}
+
+// ComputeInfo — tugunning hisoblash imkoniyatlari (mijoz tomonidan xabar qilinadi)
+type ComputeInfo struct {
+	Enabled      bool     `json:"enabled"`
+	Engines      []string `json:"engines"`   // ollama | llama.cpp | echo
+	Models       []string `json:"models"`    // allaqachon mavjud modellar
+	AllowPull    bool     `json:"allowPull"` // yangi modelni avtomatik yuklab olishga ruxsat
+	RAMBytes     int64    `json:"ramBytes"`  // umumiy operativ xotira
+	FreeRAMBytes int64    `json:"freeRamBytes"`
+	CPUCores     int      `json:"cpuCores"`
+	GPU          GPUInfo  `json:"gpu"`
+	MaxParallel  int      `json:"maxParallel"`       // bir vaqtda nechta ish
+	RPCPort      int      `json:"rpcPort,omitempty"` // llama.cpp rpc-server porti (katta modelni birlashtirish)
+}
+
+type GPUInfo struct {
+	Present   bool   `json:"present"`
+	Name      string `json:"name"`
+	VRAMBytes int64  `json:"vramBytes"`
+	Backend   string `json:"backend"` // cuda | metal | rocm | vulkan | none
 }
 
 type File struct {

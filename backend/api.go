@@ -88,10 +88,22 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 			forfeited += p.AmountCents
 		}
 	}
+	computeOnline := 0
+	gpuOnline := 0
+	for _, n := range s.db.Nodes {
+		if n.Status == NodeActive && n.Online && n.Compute != nil && n.Compute.Enabled {
+			computeOnline++
+			if n.Compute.GPU.Present {
+				gpuOnline++
+			}
+		}
+	}
 	open, opens, closes := s.payoutWindow()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"totalNodes":          totalNodes,
 		"onlineNodes":         online,
+		"computeNodes":        computeOnline,
+		"gpuNodes":            gpuOnline,
 		"totalSpace":          totalSpace,
 		"usedSpace":           usedSpace,
 		"storedBytes":         storedBytes,
@@ -120,15 +132,16 @@ func (s *Server) handleAgreement(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID                string `json:"id"`
-		Name              string `json:"name"`
-		OS                string `json:"os"`
-		Platform          string `json:"platform"`
-		Version           string `json:"version"`
-		CPUCores          int    `json:"cpuCores"`
-		SpaceTotal        int64  `json:"spaceTotal"`
-		AgreementVersion  string `json:"agreementVersion"`
-		AgreementAccepted bool   `json:"agreementAccepted"`
+		ID                string       `json:"id"`
+		Name              string       `json:"name"`
+		OS                string       `json:"os"`
+		Platform          string       `json:"platform"`
+		Version           string       `json:"version"`
+		CPUCores          int          `json:"cpuCores"`
+		SpaceTotal        int64        `json:"spaceTotal"`
+		AgreementVersion  string       `json:"agreementVersion"`
+		AgreementAccepted bool         `json:"agreementAccepted"`
+		Compute           *ComputeInfo `json:"compute"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -192,6 +205,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	n.AgreementAccepted = true
 	n.Online = true
 	n.LastSeen = ts
+	n.Compute = sanitizeCompute(req.Compute)
 	s.db.markDirty()
 	s.db.mu.Unlock()
 	s.persist()
@@ -218,8 +232,9 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SpaceUsed  int64 `json:"spaceUsed"`
-		UserActive bool  `json:"userActive"`
+		SpaceUsed  int64        `json:"spaceUsed"`
+		UserActive bool         `json:"userActive"`
+		Compute    *ComputeInfo `json:"compute"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -229,6 +244,10 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if n == nil {
 		s.db.mu.Unlock()
 		return
+	}
+	if req.Compute != nil {
+		n.Compute = sanitizeCompute(req.Compute)
+		s.db.markDirty()
 	}
 	ts := s.now()
 	wasOnline := n.Online

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -41,6 +42,12 @@ type Config struct {
 	PayoutAnytime      bool // test uchun: payout oynasini cheklamaslik
 	PayoutWindowDays   int  // oy oxiridagi payout oynasi (kun)
 	MaxSimNodes        int
+
+	// Hisoblash (GPU/CPU) klasteri
+	ComputeKeys         []string      // OpenAI API kalitlari (admin token ham ishlaydi)
+	ComputePollTimeout  time.Duration // worker uzoq-poll muddati
+	ComputeJobTimeout   time.Duration // bitta inference ishi uchun chegara
+	ComputeQueueTimeout time.Duration // bo'sh tugun kutish chegarasi
 }
 
 func defaultConfig() Config {
@@ -61,6 +68,10 @@ func defaultConfig() Config {
 		MaxUploadBytes:     16 << 30,
 		PayoutWindowDays:   3,
 		MaxSimNodes:        500,
+
+		ComputePollTimeout:  25 * time.Second,
+		ComputeJobTimeout:   10 * time.Minute,
+		ComputeQueueTimeout: 60 * time.Second,
 	}
 }
 
@@ -83,7 +94,15 @@ func main() {
 	flag.Float64Var(&cfg.RateCentsPerGBHour, "rate", cfg.RateCentsPerGBHour, "tarif: 1 GB saqlangan fayl uchun 1 soatda to'lanadigan sent")
 	flag.Int64Var(&cfg.MaxUploadBytes, "max-upload", cfg.MaxUploadBytes, "maksimal yuklanadigan fayl hajmi (bayt)")
 	flag.BoolVar(&cfg.PayoutAnytime, "payout-anytime", false, "payout'ni oy oxirini kutmasdan ruxsat berish (test)")
+	computeKeys := flag.String("compute-keys", os.Getenv("SDRIVE_COMPUTE_KEYS"), "OpenAI API kalitlari (vergul bilan); bo'sh bo'lsa admin token ishlatiladi")
+	flag.DurationVar(&cfg.ComputeJobTimeout, "compute-job-timeout", cfg.ComputeJobTimeout, "bitta inference ishi uchun vaqt chegarasi")
 	flag.Parse()
+
+	for _, k := range strings.Split(*computeKeys, ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			cfg.ComputeKeys = append(cfg.ComputeKeys, k)
+		}
+	}
 
 	if cfg.OfflineTimeout <= cfg.HeartbeatInterval {
 		log.Fatalf("-offline-timeout (%s) -heartbeat (%s) dan katta bo'lishi kerak", cfg.OfflineTimeout, cfg.HeartbeatInterval)

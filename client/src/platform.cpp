@@ -235,6 +235,92 @@ int64_t userIdleSeconds() {
 #endif
 }
 
+int64_t totalRAMBytes() {
+#ifdef _WIN32
+    MEMORYSTATUSEX st;
+    st.dwLength = sizeof(st);
+    if (GlobalMemoryStatusEx(&st)) return (int64_t)st.ullTotalPhys;
+    return 0;
+#elif defined(__APPLE__)
+    std::string out = runCmd("sysctl -n hw.memsize 2>/dev/null");
+    return (int64_t)strtoll(out.c_str(), nullptr, 10);
+#else
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long page = sysconf(_SC_PAGE_SIZE);
+    if (pages > 0 && page > 0) return (int64_t)pages * (int64_t)page;
+    return 0;
+#endif
+}
+
+#ifndef _WIN32
+static std::string trimEol(std::string s) {
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+    return s;
+}
+#endif
+
+// nvidia-smi barcha platformalarda bir xil ishlaydi (o'rnatilgan bo'lsa)
+static bool detectNvidia(std::string& name, int64_t& vram, std::string& backend) {
+#ifdef _WIN32
+    // Windows: nvidia-smi PATH da bo'lishi mumkin
+    FILE* p = _popen("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>NUL", "r");
+#else
+    FILE* p = popen("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,nounits 2>/dev/null", "r");
+#endif
+    if (!p) return false;
+    char line[512] = {0};
+    char* got = fgets(line, sizeof(line), p);
+#ifdef _WIN32
+    _pclose(p);
+#else
+    pclose(p);
+#endif
+    if (!got) return false;
+    std::string s(line);
+    size_t comma = s.rfind(',');
+    if (comma == std::string::npos) return false;
+    name = s.substr(0, comma);
+    while (!name.empty() && (name.back() == ' ')) name.pop_back();
+    while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+    int64_t mb = strtoll(s.c_str() + comma + 1, nullptr, 10);
+    if (name.empty() || mb <= 0) return false;
+    vram = mb * 1024 * 1024;
+    backend = "cuda";
+    return true;
+}
+
+bool detectGPU(std::string& name, int64_t& vramBytes, std::string& backend) {
+    if (detectNvidia(name, vramBytes, backend)) return true;
+#ifdef __APPLE__
+    // Apple Silicc'da GPU integratsiyalangan (Metal), xotira tizim bilan bo'lishiladi
+    std::string brand = trimEol(runCmd("sysctl -n machdep.cpu.brand_string 2>/dev/null"));
+    std::string arch = trimEol(runCmd("uname -m 2>/dev/null"));
+    if (arch == "arm64") {
+        name = brand.empty() ? "Apple Silicon GPU" : brand + " GPU";
+        vramBytes = totalRAMBytes(); // yagona xotira
+        backend = "metal";
+        return true;
+    }
+    std::string gpu = trimEol(runCmd("system_profiler SPDisplaysDataType 2>/dev/null | awk -F': ' '/Chipset Model/{print $2; exit}'"));
+    if (!gpu.empty()) {
+        name = gpu;
+        vramBytes = 0;
+        backend = "metal";
+        return true;
+    }
+#elif !defined(_WIN32)
+    // AMD ROCm
+    std::string rocm = trimEol(runCmd("rocm-smi --showproductname 2>/dev/null | awk -F': ' '/Card series|Card Series/{print $2; exit}'"));
+    if (!rocm.empty()) {
+        name = rocm;
+        vramBytes = 0;
+        backend = "rocm";
+        return true;
+    }
+#endif
+    return false;
+}
+
 std::string platformId() {
 #ifdef _WIN32
     return "windows";

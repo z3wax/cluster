@@ -33,6 +33,7 @@ type nodeClient struct {
 	OS               string
 	SpaceTotal       int64
 	agreementVersion string
+	Compute          *ComputeInfo // nil bo'lsa — faqat xotira tuguni
 }
 
 type nodeTask struct {
@@ -100,6 +101,7 @@ func (c *nodeClient) register() error {
 		"spaceTotal":        c.SpaceTotal,
 		"agreementVersion":  c.agreementVersion,
 		"agreementAccepted": true,
+		"compute":           c.Compute,
 	}, &resp)
 	if err != nil {
 		return err

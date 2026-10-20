@@ -100,6 +100,7 @@ button:disabled{opacity:.4;cursor:not-allowed}
       <span>Faoliyat</span><b id="stActivity">–</b>
       <span>Saqlash papkasi</span><b id="stDir">–</b>
       <span>Avtostart</span><b id="stAuto">–</b>
+      <span>AI hisoblash</span><b id="stCompute">–</b>
       <span>Oxirgi aloqa</span><b id="stLast">–</b>
     </div>
     <p class="msg err hidden" id="stError"></p>
@@ -189,6 +190,7 @@ async function status(){
   $('#stActivity').textContent=s.activity||'Kutish rejimi';
   $('#stDir').textContent=s.sdriveDir;
   $('#stAuto').textContent=s.autostart?'Yoqilgan — kompyuter yoqilganda ishga tushadi':'O\'rnatilmagan';
+  $('#stCompute').textContent=s.computeActive?('Faol — '+s.computeEngine+' dvigateli (bu kompyuter AI so\'rovlarini bajaradi)'):(s.computeEnabled?'Yoqilgan, lekin dvigatel topilmadi (ollama/llama.cpp)':'O\'chirilgan');
   $('#stLast').textContent=s.lastHeartbeat?Math.max(0,Math.round(s.serverTime-s.lastHeartbeat))+' s oldin':'–';
   const e=$('#stError');e.textContent=s.lastError?('⚠ '+s.lastError):'';e.classList.toggle('hidden',!s.lastError);
   $('#payoutInfo').textContent=s.payoutOpen?'Payout oynasi ochiq — balansni hozir chiqarib olishingiz mumkin.':

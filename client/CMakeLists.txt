@@ -16,6 +16,7 @@ add_library(sdrive_core STATIC
     src/net.cpp
     src/storage.cpp
     src/platform.cpp
+    src/compute.cpp
 )
 target_include_directories(sdrive_core PUBLIC src)
 
@@ -46,7 +47,7 @@ if(SDRIVE_STATIC)
     target_link_options(sdrive_core PUBLIC -static -static-libgcc -static-libstdc++)
 endif()
 
-add_executable(sdrive src/main.cpp src/agent.cpp src/server.cpp)
+add_executable(sdrive src/main.cpp src/agent.cpp src/server.cpp src/compute_agent.cpp)
 target_link_libraries(sdrive PRIVATE sdrive_core)
 
 enable_testing()

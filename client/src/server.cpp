@@ -154,6 +154,9 @@ static Json statusJson(AppState& st) {
     o["usedBytes"] = (double)st.usedBytes.load();
     o["localFiles"] = (double)st.storage.fileCount();
     o["userActive"] = st.userActive.load();
+    o["computeEnabled"] = st.cfg.computeEnabled;
+    o["computeActive"] = st.computeActive;
+    o["computeEngine"] = st.computeEngineName;
     o["platform"] = platformId();
     o["version"] = SDRIVE_VERSION;
     o["defaultDir"] = defaultSdriveDir();

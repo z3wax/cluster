@@ -21,6 +21,7 @@
       <a class="nav-tab" data-tab="files" href="#files">Fayllar</a>
       <a class="nav-tab" data-tab="tasks" href="#tasks">Vazifalar</a>
       <a class="nav-tab" data-tab="payouts" href="#payouts">To'lovlar</a>
+      <a class="nav-tab" data-tab="compute" href="#compute">🧠 AI Hisoblash</a>
       <a class="nav-tab" data-tab="sim" href="#sim">⚙ Simulyator</a>
     </div>
 
@@ -173,6 +174,39 @@
       <p class="muted small">Payout oy oxirida olinadi (6.1). Pulni olmasdan dastur o'chirilsa, balans yo'qotiladi (6.2).</p>
     </div>
     <div class="table-wrap"><table id="tPayouts"></table></div>
+  </section>
+
+  <!-- AI HISOBLASH -->
+  <section id="tab-compute" class="tab-content admin-only">
+    <div class="section-head">
+      <h2>AI hisoblash klasteri</h2>
+      <p class="muted small">Bosh PC butun klaster GPU/CPU quvvatidan foydalanadi. So'rovlar ishga tushirilgan tugunlarga ularning imkoniyatiga qarab taqsimlanadi. Tashqi dasturlar uchun OpenAI-mos API: <span class="mono" id="apiBase">/v1/chat/completions</span></p>
+    </div>
+    <div class="meta-row" id="computeMeta"></div>
+
+    <div class="card">
+      <div class="card-header">
+        <div><h2 class="card-title">💬 Chat (klaster orqali)</h2>
+          <p class="muted small mt-4">So'rov klasterdagi mos tugunda bajariladi va javob real vaqtda oqib keladi.</p></div>
+      </div>
+      <div class="chat-row">
+        <select id="chatModel"></select>
+        <input type="text" id="chatInput" placeholder="Savolingizni yozing..." autocomplete="off">
+        <button class="btn btn-primary" id="chatSend">Yuborish</button>
+      </div>
+      <div class="chat-out" id="chatOut"></div>
+      <p class="muted small" id="chatMeta"></p>
+    </div>
+
+    <div class="list-head"><h3>Hisoblash tugunlari</h3>
+      <button class="btn btn-outline btn-sm" id="btnRefreshCompute">🔄 Yangilash</button></div>
+    <div class="table-wrap"><table id="tCompute"></table></div>
+
+    <div class="card mt-24">
+      <h2 class="card-title">Tashqi ulanish (OpenAI mijozlari)</h2>
+      <p class="muted small mt-4">Istalgan OpenAI-mos dastur (Python <span class="mono">openai</span>, curl, LangChain va h.k.) klasterni oddiy model sifatida ishlatishi mumkin:</p>
+      <pre class="code" id="curlExample"></pre>
+    </div>
   </section>
 
   <!-- SIMULYATOR -->

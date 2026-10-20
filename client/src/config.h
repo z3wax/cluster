@@ -20,6 +20,15 @@ struct Config {
     std::string state = "setup";  // setup | agreement | running | uninstalled
     int uiPort = 48673;
 
+    // Hisoblash (GPU/CPU) klasteri
+    bool computeEnabled = false;
+    std::string computeEngine = "auto"; // auto | ollama | llama.cpp | echo | off
+    std::string computeModels;          // vergul bilan (echo yoki cheklash uchun)
+    bool computeAllowPull = true;
+    int computeMaxParallel = 1;
+    std::string ollamaUrl = "http://127.0.0.1:11434";
+    std::string llamaUrl = "http://127.0.0.1:8080";
+
     Json toJson() const {
         Json o;
         o["nodeId"] = nodeId;
@@ -34,6 +43,13 @@ struct Config {
         o["setupDone"] = setupDone;
         o["state"] = state;
         o["uiPort"] = uiPort;
+        o["computeEnabled"] = computeEnabled;
+        o["computeEngine"] = computeEngine;
+        o["computeModels"] = computeModels;
+        o["computeAllowPull"] = computeAllowPull;
+        o["computeMaxParallel"] = computeMaxParallel;
+        o["ollamaUrl"] = ollamaUrl;
+        o["llamaUrl"] = llamaUrl;
         return o;
     }
 
@@ -50,6 +66,13 @@ struct Config {
         setupDone = o["setupDone"].asBool(setupDone);
         state = o["state"].asStr(state);
         uiPort = (int)o["uiPort"].asInt(uiPort);
+        computeEnabled = o["computeEnabled"].asBool(computeEnabled);
+        computeEngine = o["computeEngine"].asStr(computeEngine);
+        computeModels = o["computeModels"].asStr(computeModels);
+        computeAllowPull = o["computeAllowPull"].asBool(computeAllowPull);
+        computeMaxParallel = (int)o["computeMaxParallel"].asInt(computeMaxParallel);
+        ollamaUrl = o["ollamaUrl"].asStr(ollamaUrl);
+        llamaUrl = o["llamaUrl"].asStr(llamaUrl);
     }
 };
 

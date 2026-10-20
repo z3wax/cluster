@@ -22,6 +22,12 @@ bool diskFreeBytes(const std::string& path, int64_t& freeBytes);
 // Aniqlab bo'lmasa -1.
 int64_t userIdleSeconds();
 
+// Umumiy operativ xotira (bayt); aniqlab bo'lmasa 0
+int64_t totalRAMBytes();
+
+// GPU aniqlash (nvidia-smi / Apple Metal / rocm). Topilsa true va name/vram/backend to'ldiriladi.
+bool detectGPU(std::string& name, int64_t& vramBytes, std::string& backend);
+
 std::string platformId();   // windows | macos | linux
 std::string osName();       // masalan "Ubuntu 24.04", "Windows", "macOS 14.5"
 std::string archName();     // x64 | arm64 | x86

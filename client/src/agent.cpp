@@ -79,6 +79,8 @@ static bool ensureRegistered(AppState& st) {
     req["spaceTotal"] = (double)c.quotaBytes;
     req["agreementVersion"] = c.agreementVersion;
     req["agreementAccepted"] = c.agreementAccepted;
+    if (st.computeAgent.enabled())
+        req["compute"] = buildComputeInfo(c, st.computeAgent.engine(), st.computeAgent.engineName());
     HttpResp r = serverCall(st, "POST", "/api/nodes/register", req.dump());
     bool ok = false;
     Json j = Json::parse(r.body, &ok);
@@ -161,6 +163,8 @@ static void heartbeatOnce(AppState& st) {
     Json req;
     req["spaceUsed"] = (double)st.usedBytes.load();
     req["userActive"] = active;
+    if (st.computeAgent.enabled())
+        req["compute"] = buildComputeInfo(c, st.computeAgent.engine(), st.computeAgent.engineName());
     HttpResp r = serverCall(st, "POST", "/api/nodes/" + c.nodeId + "/heartbeat", req.dump());
     bool ok = false;
     Json j = Json::parse(r.body, &ok);
@@ -399,6 +403,9 @@ static void workerLoop(AppState& st) {
 }
 
 void startAgent(AppState& st) {
+    st.computeAgent.start(st); // engine tanlanadi; yoqilgan bo'lsa poll oqimlari ishga tushadi
+    st.computeEngineName = st.computeAgent.engineName();
+    st.computeActive = st.computeAgent.enabled();
     st.hbThread = std::thread(heartbeatLoop, std::ref(st));
     st.workerThread = std::thread(workerLoop, std::ref(st));
 }
@@ -406,6 +413,7 @@ void startAgent(AppState& st) {
 void stopAgent(AppState& st) {
     st.running = false;
     st.cv.notify_all();
+    st.computeAgent.stop();
     if (st.hbThread.joinable()) st.hbThread.join();
     if (st.workerThread.joinable()) st.workerThread.join();
 }

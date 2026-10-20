@@ -4,6 +4,7 @@
 #include "json.hpp"
 #include "net.h"
 #include "storage.h"
+#include "compute.h"
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -322,14 +323,149 @@ static void testStorage() {
     fs::remove_all(dir, ec);
 }
 
+// Oddiy HTTP server: bitta so'rovga belgilangan javob qaytaradi (streaming testi uchun)
+static int serveOnce(const std::string& response, int& port) {
+    netInit();
+    sock_t ls = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(0x7F000001);
+    addr.sin_port = 0;
+    ::bind(ls, (sockaddr*)&addr, sizeof(addr));
+    ::listen(ls, 4);
+    socklen_t len = sizeof(addr);
+    getsockname(ls, (sockaddr*)&addr, &len);
+    port = ntohs(addr.sin_port);
+    std::thread([ls, response] {
+        sock_t c = ::accept(ls, nullptr, nullptr);
+        char buf[8192];
+        ::recv(c, buf, sizeof(buf), 0); // so'rovni o'qib tashlaymiz
+        size_t off = 0;
+        while (off < response.size()) {
+            int w = (int)::send(c, response.data() + off, (int)(response.size() - off), 0);
+            if (w <= 0) break;
+            off += (size_t)w;
+        }
+        CLOSE_SOCK(c);
+        CLOSE_SOCK(ls);
+    }).detach();
+    return 0;
+}
+
+static void testHttpStream() {
+    // chunked javob — bo'laklab kelgan tokenlar to'g'ri yig'ilishi kerak
+    int port = 0;
+    std::string resp =
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+        "5\r\nHello\r\n"
+        "1\r\n \r\n"
+        "6\r\nworld!\r\n"
+        "0\r\n\r\n";
+    serveOnce(resp, port);
+    HttpReq r;
+    r.url = "http://127.0.0.1:" + std::to_string(port) + "/";
+    std::string got;
+    int parts = 0;
+    HttpResp hr = http_stream(r, [&](const char* d, size_t n) {
+        got.append(d, n);
+        parts++;
+        return true;
+    });
+    CHECK(hr.status == 200);
+    CHECK_EQ(got, std::string("Hello world!"));
+    CHECK(parts >= 3); // bo'laklab kelgan
+
+    // content-length javob
+    int port2 = 0;
+    serveOnce("HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nSalom dunyo", port2);
+    HttpReq r2;
+    r2.url = "http://127.0.0.1:" + std::to_string(port2) + "/";
+    std::string got2;
+    http_stream(r2, [&](const char* d, size_t n) { got2.append(d, n); return true; });
+    CHECK_EQ(got2, std::string("Salom dunyo"));
+
+    // onBody false qaytarsa oqim to'xtaydi — birinchi bo'lakdan keyin to'xtaymiz
+    int port3 = 0;
+    std::string chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                          "4\r\nAAAA\r\n4\r\nBBBB\r\n4\r\nCCCC\r\n0\r\n\r\n";
+    serveOnce(chunked, port3);
+    HttpReq r3;
+    r3.url = "http://127.0.0.1:" + std::to_string(port3) + "/";
+    std::string collected;
+    http_stream(r3, [&](const char* d, size_t n) {
+        collected.append(d, n);
+        return false; // birinchi bo'lakdan keyin to'xtaymiz
+    });
+    CHECK_EQ(collected, std::string("AAAA")); // qolgan bo'laklar kelmaydi
+}
+
+static void testEchoEngine() {
+    Config cfg;
+    cfg.computeModels = "gemma:2b,llama3";
+    std::string name;
+    auto e = makeEngine("echo", cfg);
+    CHECK(e && e->available() && e->name() == "echo");
+    CHECK(e->models().size() == 2);
+
+    ComputeJob job;
+    job.kind = "chat";
+    job.model = "gemma:2b";
+    job.messages = {{"system", "yordamchi"}, {"user", "bir ikki uch"}};
+    std::string tokens, final, err;
+    std::vector<double> emb;
+    bool ok = e->run(
+        job, [&](const std::string& t) {
+            tokens += t;
+            return true;
+        },
+        final, emb, err);
+    CHECK(ok && final == "bir ikki uch" && tokens == "bir ikki uch");
+
+    // bekor qilish: onToken false -> to'xtaydi
+    int count = 0;
+    e->run(
+        job, [&](const std::string&) {
+            count++;
+            return false;
+        },
+        final, emb, err);
+    CHECK(count == 1);
+
+    // embedding
+    ComputeJob ej;
+    ej.kind = "embedding";
+    ej.prompt = "matn";
+    emb.clear();
+    e->run(ej, [](const std::string&) { return true; }, final, emb, err);
+    CHECK(emb.size() == 8);
+
+    // auto rejimida echo tanlanmaydi (faqat haqiqiy dvigatellar)
+    cfg.computeEngine = "auto";
+    std::string chosen;
+    auto autoE = selectEngine(cfg, chosen); // ollama/llama.cpp yo'q -> nullptr
+    CHECK(!autoE);
+
+    // buildComputeInfo — GPU/RAM/model maydonlari
+    cfg.computeEnabled = true;
+    Json info = buildComputeInfo(cfg, e.get(), "echo");
+    CHECK(info["enabled"].asBool());
+    CHECK(info["models"].asArr().size() == 2);
+    CHECK(info["cpuCores"].asInt() >= 1);
+    CHECK(info["engines"].asArr().size() == 1 && info["engines"].asArr()[0].asStr() == "echo");
+}
+
 int main() {
     setConfigDirOverride((fs::temp_directory_path() / "sdrive_test_cfg").string());
     struct T {
         const char* name;
         std::function<void()> fn;
     } tests[] = {
-        {"sha256", testSha256}, {"hmac", testHmac},       {"chacha20", testChaCha20}, {"hex/random", testHexRandom},
-        {"json", testJson},     {"url", testUrl},         {"http-parse", testHttpParse}, {"http-socket", testHttpSocket},
+        {"sha256", testSha256},         {"hmac", testHmac},
+        {"chacha20", testChaCha20},     {"hex/random", testHexRandom},
+        {"json", testJson},             {"url", testUrl},
+        {"http-parse", testHttpParse},  {"http-socket", testHttpSocket},
+        {"http-stream", testHttpStream}, {"echo-engine", testEchoEngine},
         {"storage", testStorage},
     };
     for (auto& t : tests) {

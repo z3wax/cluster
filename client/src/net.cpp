@@ -529,3 +529,147 @@ HttpResp http_request(const std::string& method, const std::string& url, const s
     if (!bearerToken.empty()) r.headers.push_back({"Authorization", "Bearer " + bearerToken});
     return http_do(r);
 }
+
+// --- incremental chunked-transfer dekoder ---
+namespace {
+struct ChunkDecoder {
+    std::string buf;
+    bool inSize = true;
+    long long remaining = 0;
+    bool done = false;
+
+    // feed: kelgan baytlarni qo'shadi, dekodlangan payloadni emit ga uzatadi
+    bool feed(const char* data, size_t n, const std::function<bool(const char*, size_t)>& emit) {
+        buf.append(data, n);
+        while (!done) {
+            if (inSize) {
+                size_t eol = buf.find("\r\n");
+                if (eol == std::string::npos) return true; // ko'proq kerak
+                std::string line = buf.substr(0, eol);
+                size_t semi = line.find(';');
+                if (semi != std::string::npos) line = line.substr(0, semi);
+                remaining = strtoll(line.c_str(), nullptr, 16);
+                buf.erase(0, eol + 2);
+                inSize = false;
+                if (remaining == 0) {
+                    done = true;
+                    return true;
+                }
+            }
+            if (buf.empty()) return true;
+            size_t take = buf.size() < (size_t)remaining ? buf.size() : (size_t)remaining;
+            if (take > 0 && !emit(buf.data(), take)) return false;
+            buf.erase(0, take);
+            remaining -= (long long)take;
+            if (remaining == 0) {
+                // bo'lak oxiridagi CRLF
+                if (buf.size() < 2) return true;
+                buf.erase(0, 2);
+                inSize = true;
+            }
+        }
+        return true;
+    }
+};
+} // namespace
+
+HttpResp http_stream(const HttpReq& req, const std::function<bool(const char*, size_t)>& onBody) {
+    ParsedUrl u;
+    if (!parseUrl(req.url, u)) {
+        HttpResp r;
+        r.error = "URL noto'g'ri: " + req.url;
+        return r;
+    }
+    if (u.scheme != "http") {
+        // https (kamdan-kam, lokal bo'lmagan): oddiy to'liq o'qish, so'ng bir martada uzatish
+        HttpResp r = http_do(req);
+        if (r.ok() && !r.body.empty()) onBody(r.body.data(), r.body.size());
+        return r;
+    }
+    if (!netInit()) {
+        HttpResp r;
+        r.error = "tarmoq ishga tushmadi";
+        return r;
+    }
+    HttpResp resp;
+    Conn c;
+    c.s = connectTo(u.host, u.port, req.timeoutSec, resp.error);
+    if (c.s == SOCK_ERR) return resp;
+
+    bool defPort = u.port == 80;
+    std::string hostHdr = u.host.find(':') != std::string::npos ? "[" + u.host + "]" : u.host;
+    if (!defPort) hostHdr += ":" + std::to_string(u.port);
+    std::ostringstream h;
+    h << req.method << " " << u.path << " HTTP/1.1\r\n"
+      << "Host: " << hostHdr << "\r\n"
+      << "User-Agent: SDriveClient/2.0\r\n"
+      << "Accept: */*\r\n"
+      << "Connection: close\r\n";
+    for (const auto& kv : req.headers) h << kv.first << ": " << kv.second << "\r\n";
+    if (!req.body.empty() || req.method == "POST" || req.method == "PUT") {
+        h << "Content-Type: " << req.contentType << "\r\n"
+          << "Content-Length: " << req.body.size() << "\r\n";
+    }
+    h << "\r\n";
+    std::string head = h.str() + req.body;
+    if (!c.writeAll(head.data(), head.size())) {
+        resp.error = "so'rov yuborilmadi";
+        c.close();
+        return resp;
+    }
+
+    std::string raw;
+    std::vector<char> buf(32 * 1024);
+    bool haveHeaders = false, chunked = false, stopped = false;
+    long long contentLen = -1, bodyGot = 0;
+    ChunkDecoder dec;
+    auto emit = [&](const char* d, size_t n) -> bool {
+        if (stopped) return false;
+        if (!onBody(d, n)) {
+            stopped = true;
+            return false;
+        }
+        return true;
+    };
+    while (true) {
+        int n = c.read(buf.data(), (int)buf.size());
+        if (n <= 0) break;
+        if (!haveHeaders) {
+            raw.append(buf.data(), (size_t)n);
+            size_t hEnd = raw.find("\r\n\r\n");
+            if (hEnd == std::string::npos) {
+                if (raw.size() > 256 * 1024) {
+                    resp.error = "sarlavha juda katta";
+                    break;
+                }
+                continue;
+            }
+            parseHttpResponse(raw.substr(0, hEnd + 4), resp, true);
+            haveHeaders = true;
+            chunked = lower(resp.header("transfer-encoding")).find("chunked") != std::string::npos;
+            std::string cl = resp.header("content-length");
+            if (!cl.empty()) contentLen = strtoll(cl.c_str(), nullptr, 10);
+            std::string rest = raw.substr(hEnd + 4);
+            if (!rest.empty()) {
+                if (chunked) {
+                    if (!dec.feed(rest.data(), rest.size(), emit)) break;
+                } else {
+                    bodyGot += (long long)rest.size();
+                    if (!emit(rest.data(), rest.size())) break;
+                }
+            }
+        } else {
+            if (chunked) {
+                if (!dec.feed(buf.data(), (size_t)n, emit) || dec.done) break;
+            } else {
+                bodyGot += n;
+                if (!emit(buf.data(), (size_t)n)) break;
+            }
+        }
+        if (!chunked && contentLen >= 0 && bodyGot >= contentLen) break;
+        if (chunked && dec.done) break;
+    }
+    c.close();
+    if (!haveHeaders && resp.error.empty()) resp.error = "javob kelmadi";
+    return resp;
+}

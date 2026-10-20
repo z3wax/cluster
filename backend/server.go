@@ -39,9 +39,10 @@ type Server struct {
 	lastAudit     map[string]int64
 	priorityAudit map[string][]string
 
-	kick chan struct{}
-	sim  *simManager
-	web  http.FileSystem
+	kick    chan struct{}
+	sim     *simManager
+	compute *computeManager
+	web     http.FileSystem
 
 	downloadsDir string
 	wg           sync.WaitGroup
@@ -80,6 +81,7 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	s.setupWeb()
 	s.sim = newSimManager(s, filepath.Join(dataDir, "sim"))
+	s.compute = newComputeManager(s)
 	return s, nil
 }
 
@@ -87,10 +89,11 @@ func (s *Server) now() int64 { return s.clock().Unix() }
 
 // Start — fon jarayonlari: replikatsiya menejeri, diskka yozish, server chunk tekshiruvi
 func (s *Server) Start(ctx context.Context) {
-	s.wg.Add(3)
+	s.wg.Add(4)
 	go func() { defer s.wg.Done(); s.reconcileLoop(ctx) }()
 	go func() { defer s.wg.Done(); s.flushLoop(ctx) }()
 	go func() { defer s.wg.Done(); s.scrubLoop(ctx) }()
+	go func() { defer s.wg.Done(); s.compute.reap(ctx) }()
 	s.sim.resume()
 }
 
@@ -295,6 +298,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/admin/sim/online", s.admin(s.handleSimOnline))
 	mux.HandleFunc("POST /api/admin/sim/remove", s.admin(s.handleSimRemove))
 
+	// hisoblash (GPU/CPU) klasteri + OpenAI-mos gateway
+	s.computeRoutes(mux)
+
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "API topilmadi: "+r.Method+" "+r.URL.Path)
 	})
@@ -330,7 +336,7 @@ func drainBody(next http.Handler) http.Handler {
 
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/v1/") {
 			// Credential'siz ochiq kirish: tugunlar va tashqi monitoring uchun.
 			// Admin cookie boshqa saytlarga yuborilmaydi (SameSite=Strict + X-Requested-With talabi).
 			w.Header().Set("Access-Control-Allow-Origin", "*")

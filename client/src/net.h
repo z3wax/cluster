@@ -5,6 +5,7 @@
 #include <map>
 #include <vector>
 #include <utility>
+#include <functional>
 
 struct HttpResp {
     int status = 0;
@@ -29,6 +30,12 @@ struct HttpReq {
 };
 
 HttpResp http_do(const HttpReq& req);
+
+// http_stream — javob tanasini (dekodlangan) kelgani sayin onBody ga uzatadi.
+// onBody false qaytarsa oqim to'xtaydi. Lokal inference dvigatellaridan (ollama/llama.cpp)
+// tokenlarni real vaqtda olish uchun. Faqat http:// (lokal dvigatellar); https bo'lsa to'liq
+// o'qib bir martada uzatadi.
+HttpResp http_stream(const HttpReq& req, const std::function<bool(const char*, size_t)>& onBody);
 
 // Qisqa variant: body bo'sh bo'lmasa Content-Type bilan yuboriladi
 HttpResp http_request(const std::string& method, const std::string& url,

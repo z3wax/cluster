@@ -3,6 +3,7 @@
 #include "config.h"
 #include "storage.h"
 #include "net.h"
+#include "compute.h"
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -42,6 +43,11 @@ struct AppState {
     std::string activity;
 
     std::thread hbThread, workerThread;
+
+    // hisoblash (GPU/CPU) ishchisi
+    ComputeAgent computeAgent;
+    std::string computeEngineName;
+    bool computeActive = false;
 };
 
 // Daemon: ro'yxatdan o'tish, heartbeat, auditlar, vazifalar, fayllarni tekshirish

@@ -63,7 +63,7 @@ if [[ "${1:-}" == "--windows" ]]; then
   echo "==> Windows .exe ($CXX_WIN)"
   (cd "$HERE/src" && "$CXX_WIN" -std=c++17 -O2 -s -mwindows -static -static-libgcc -static-libstdc++ \
       -D_WIN32_WINNT=0x0A00 -DWIN32_LEAN_AND_MEAN -DNOMINMAX -I. \
-      main.cpp agent.cpp server.cpp config.cpp crypto.cpp net.cpp storage.cpp platform.cpp \
+      main.cpp agent.cpp server.cpp compute_agent.cpp config.cpp crypto.cpp net.cpp storage.cpp platform.cpp compute.cpp \
       -lws2_32 -lwinhttp -lbcrypt -lshell32 -ladvapi32 -o "$DIST/sdrive-windows.exe")
   cp "$DIST/sdrive-windows.exe" "$WEB/"
 fi
