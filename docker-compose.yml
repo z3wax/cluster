@@ -1,0 +1,29 @@
+# SDrive Cluster koordinatori — bitta buyruq bilan ishga tushirish.
+#
+#   SDRIVE_ADMIN_TOKEN=$(openssl rand -hex 24) docker compose up -d --build
+#   docker compose logs -f           # admin token va manzil
+#
+# Ma'lumotlar (db.json, chunks, admin_token) `sdrive-data` volume'ida saqlanadi — qayta
+# ishga tushishda yo'qolmaydi. HTTPS uchun oldiga Caddy/nginx qo'ying yoki -tls-cert bering.
+services:
+  sdrive:
+    build: .
+    image: sdrive-server
+    restart: unless-stopped
+    ports:
+      - "${SDRIVE_PORT:-8080}:8080"
+    environment:
+      # bo'sh qoldirsangiz, server tasodifiy token yaratadi (loglarda ko'rinadi)
+      SDRIVE_ADMIN_TOKEN: "${SDRIVE_ADMIN_TOKEN:-}"
+      # OpenAI API kalitlari (vergul bilan); bo'sh bo'lsa admin token ishlatiladi
+      SDRIVE_COMPUTE_KEYS: "${SDRIVE_COMPUTE_KEYS:-}"
+    volumes:
+      - sdrive-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/info"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  sdrive-data:

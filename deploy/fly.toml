@@ -1,0 +1,30 @@
+# Fly.io deploy: `fly launch --copy-config --no-deploy` keyin `fly deploy`
+# (yoki shu faylni loyiha ildiziga ko'chiring). Avval: fly volumes create sdrive_data -s 3
+app = "sdrive-cluster"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  SDRIVE_DATA_DIR = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false   # koordinator doim ishlab turishi kerak (tugunlar ulanadi)
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[mounts]]
+  source = "sdrive_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
+
+# Admin tokenni sir sifatida bering:
+#   fly secrets set SDRIVE_ADMIN_TOKEN=$(openssl rand -hex 24)

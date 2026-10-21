@@ -60,6 +60,10 @@ Veb-panel: `http://localhost:8080` → istalgan admin bo'limi → token bilan ki
 
 HTTPS uchun: `-tls-cert cert.pem -tls-key key.pem` (yoki server oldiga nginx/Caddy qo'ying).
 
+**Haqiqiy serverga qo'yish** (VPS / Docker / Fly / Render / HF Space) — bitta buyruq bilan:
+`SDRIVE_ADMIN_TOKEN=$(openssl rand -hex 24) docker compose up -d --build`. To'liq yo'riqnoma:
+[`deploy/README.md`](deploy/README.md).
+
 | Flag | Standart | Ma'nosi |
 |---|---|---|
 | `-addr` | `:8080` | tinglash manzili |

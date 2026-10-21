@@ -1,0 +1,17 @@
+# build kontekstini kichik saqlash
+.git
+client/build
+client/build-*
+client/dist
+dist
+data
+backend/data
+**/*.exe~
+**/*.exe~
+**/*.log
+**/*.pid
+*.deb
+*.dmg
+*.tar.gz
+scripts
+SHARTNOMA.md.bak

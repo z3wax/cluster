@@ -1,0 +1,28 @@
+# VPS'da Docker'siz ishga tushirish (systemd).
+#   go build -o /usr/local/bin/sdrive-server ./backend
+#   sudo cp deploy/sdrive-server.service /etc/systemd/system/
+#   sudo mkdir -p /var/lib/sdrive && sudo cp SHARTNOMA.md /var/lib/sdrive/
+#   sudo systemctl enable --now sdrive-server
+#   journalctl -u sdrive-server -f        # admin token loglarda
+[Unit]
+Description=SDrive Cluster koordinatori
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sdrive
+Group=sdrive
+WorkingDirectory=/var/lib/sdrive
+ExecStart=/usr/local/bin/sdrive-server -addr :8080 -data /var/lib/sdrive/data -agreement /var/lib/sdrive/SHARTNOMA.md
+Restart=on-failure
+RestartSec=5
+# xavfsizlik
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/sdrive
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -77,7 +77,14 @@ func defaultConfig() Config {
 
 func main() {
 	cfg := defaultConfig()
-	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "server manzili (host:port)")
+	// Hosting platformalari (Render, Railway, Fly, HF Spaces) portni $PORT orqali beradi
+	if p := os.Getenv("PORT"); p != "" {
+		cfg.Addr = ":" + p
+	}
+	if d := os.Getenv("SDRIVE_DATA_DIR"); d != "" {
+		cfg.DataDir = d
+	}
+	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "server manzili (host:port) — $PORT ham ishlaydi")
 	flag.StringVar(&cfg.DataDir, "data", cfg.DataDir, "ma'lumotlar papkasi (db.json, chunks)")
 	flag.StringVar(&cfg.WebDir, "web", "", "statik veb papka (bo'sh: ./web, topilmasa binarga joylangan nusxa)")
 	flag.StringVar(&cfg.DownloadsDir, "downloads", "", "mijoz dasturlari papkasi, /client/ orqali beriladi (bo'sh: <web>/client)")

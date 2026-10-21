@@ -1,0 +1,18 @@
+# Render.com — repo'ni ulab, "Blueprint" sifatida shu faylni tanlang (Infrastructure as Code).
+# Render $PORT ni avtomatik beradi; disk /data ga ulanadi.
+services:
+  - type: web
+    name: sdrive-cluster
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter        # koordinator doim ishlashi uchun (free rejimi uxlab qoladi)
+    healthCheckPath: /api/info
+    envVars:
+      - key: SDRIVE_DATA_DIR
+        value: /data
+      - key: SDRIVE_ADMIN_TOKEN
+        generateValue: true   # Render tasodifiy qiymat yaratadi (Dashboard'da ko'rinadi)
+    disk:
+      name: sdrive-data
+      mountPath: /data
+      sizeGB: 3
