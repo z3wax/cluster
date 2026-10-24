@@ -1,3 +1,13 @@
+<!-- z3wax:presentation:start -->
+![SDrive Cluster](docs/brand/banner.svg)
+
+[Loyiha xaritasi va misol](docs/PROJECT_GUIDE.md) · [Roadmap](ROADMAP.md) · [Baholash](docs/EVALUATION.md) · [Changelog](CHANGELOG.md) · [Relizlar](docs/RELEASING.md)
+
+**Tekshiruvlar:** [Documentation workflow](https://github.com/z3wax/cluster/actions/workflows/documentation.yml)
+
+Hujjatlar CI holati dastur yoki model testlari holatidan alohida.
+<!-- z3wax:presentation:end -->
+
 # SDrive Cluster
 
 Go HTTP backend, brauzer interfeysi va CMake asosidagi mijozni birlashtiruvchi klaster loyihasi.
