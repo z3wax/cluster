@@ -23,6 +23,10 @@ Go HTTP backend, brauzer interfeysi va CMake asosidagi mijozni birlashtiruvchi k
 | [client/](client/) | CMake asosidagi mijoz |
 | [SHARTNOMA.md](SHARTNOMA.md) | Loyiha shartnomasi |
 
+## Bir modelni bir nechta CPU'da ishlatish
+
+[inference/README.md](inference/README.md) — bitta GGUF modelini bir nechta kompyuter CPU'lari orasida taqsimlash, worker'larni ishga tushirish va OpenAI formatidagi API.
+
 ## Backendni ishga tushirish
 
 [backend/go.mod](backend/go.mod) da Go `1.26` ko'rsatilgan. Shu modul talabiga mos toolchain ishlating.
