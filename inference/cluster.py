@@ -3,10 +3,13 @@
 import argparse
 import json
 import os
+import re
+import signal
 from pathlib import Path
 import socket
 import subprocess
 import sys
+import threading
 
 
 def positive(value):
@@ -23,18 +26,79 @@ def port(value):
     return number
 
 
+def rpc_host(value):
+    # The pinned ggml RPC parser splits on the first colon, so IPv6/URLs do not work.
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", value):
+        raise ValueError("GGUF RPC uchun IPv4 yoki hostname kerak; URL/IPv6 qo'llanmaydi")
+    return value.lower()
+
+
 def endpoints(value):
-    result = value.split(",")
+    result = []
+    for endpoint in value.split(","):
+        host, separator, service = endpoint.strip().rpartition(":")
+        if not separator:
+            raise ValueError("worker manzili HOST:PORT formatida bo'lishi kerak")
+        result.append(f"{rpc_host(host)}:{port(service)}")
     if len(result) < 2:
         raise ValueError("kamida ikkita CPU worker manzilini kiriting")
-    for endpoint in result:
-        host, separator, service = endpoint.rpartition(":")
-        if not separator or not host or any(c.isspace() for c in host):
-            raise ValueError("worker manzili HOST:PORT formatida bo'lishi kerak")
-        port(service)
     if len(set(result)) != len(result):
         raise ValueError("worker manzillari takrorlanmasligi kerak")
     return result
+
+
+class _ChildSignal(BaseException):
+    def __init__(self, number):
+        self.number = number
+
+
+def run_child(cmd):
+    """Stop and reap the native runtime when the launcher receives a stop signal."""
+    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    child = subprocess.Popen(cmd, **options)
+    previous = {}
+
+    def received(number, frame):
+        raise _ChildSignal(number)
+
+    def stop(number):
+        if child.poll() is not None:
+            return
+        try:
+            if os.name == "nt":
+                child.send_signal(signal.CTRL_BREAK_EVENT if number == signal.SIGINT else number)
+            else:
+                os.killpg(child.pid, number)
+        except ProcessLookupError:
+            pass
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":
+                child.kill()
+            else:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            child.wait()
+
+    try:
+        if threading.current_thread() is threading.main_thread():
+            for number in (signal.SIGINT, signal.SIGTERM):
+                previous[number] = signal.signal(number, received)
+        try:
+            code = child.wait()
+            return code if code >= 0 else 128 - code
+        except _ChildSignal as exc:
+            stop(exc.number)
+            return 128 + exc.number
+        except BaseException:
+            stop(signal.SIGTERM)
+            raise
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
 
 
 def command(args):
@@ -45,7 +109,7 @@ def command(args):
     binary = "ggml-rpc-server" if args.mode == "worker" else "llama-server"
     executable = Path(args.bin_dir).expanduser().resolve() / (binary + (".exe" if os.name == "nt" else ""))
     if args.mode == "worker":
-        return [str(executable), "--host", args.host, "--port", str(args.port), "--device", "CPU", "--threads", str(args.threads)]
+        return [str(executable), "--host", rpc_host(args.host), "--port", str(args.port), "--device", "CPU", "--threads", str(args.threads)]
     workers = endpoints(args.workers)
     model = Path(args.model).expanduser().resolve()
     if not model.is_file():
@@ -113,7 +177,7 @@ def main(argv=None):
                         pass
                 except OSError as exc:
                     raise ValueError(f"worker bilan aloqa yo'q: {endpoint}: {exc}") from exc
-        return subprocess.call(cmd)
+        return run_child(cmd)
     except (ValueError, TypeError, KeyError, RuntimeError, ImportError, argparse.ArgumentTypeError, OSError) as exc:
         print(f"Xato: {exc}", file=sys.stderr)
         return 2

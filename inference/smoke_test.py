@@ -86,16 +86,14 @@ def main():
                 print(log.read(), file=sys.stderr)
             raise
         finally:
-            # Launcher waits for its child. Stop children directly as well, cross-platform.
+            # The POSIX launcher forwards termination and reaps its native child.
+            # Windows taskkill also handles force-terminated launcher trees.
             for process in reversed(processes):
                 if process.poll() is None:
                     if sys.platform == "win32":
                         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
                     else:
-                        # All test subprocesses get their own process group below.
-                        import os
-                        import signal
-                        os.killpg(process.pid, signal.SIGTERM)
+                        process.terminate()
                     process.wait(timeout=10)
             for log in logs:
                 log.close()

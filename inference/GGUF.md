@@ -21,6 +21,8 @@ Quyidagi buyruqlarni `cluster/` katalogidan bajaring. `--bin-dir` haqiqiy binary
 
 ## 1. Worker kompyuterlar
 
+Pinned RPC IPv4 yoki hostname manzillarini qo'llaydi; HTTP URL va IPv6 endpoint bermang. Launcher SIGTERM/SIGINT olganda native model jarayonini ham to'xtatadi.
+
 Misolda LAN IP'lari `192.168.1.11` va `192.168.1.12`. Har birida o'z IP manzilini yozing:
 
 ```bash

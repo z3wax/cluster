@@ -8,7 +8,7 @@
 TF_CPP_MIN_LOG_LEVEL=2 TF_NUM_INTRAOP_THREADS=1 TF_NUM_INTEROP_THREADS=1 OMP_NUM_THREADS=1 python3 -m unittest discover -s inference/tests -v
 ```
 
-**46 test o'tdi, skip yoki xato yo'q** (16.5 soniya). Testlar kichik, lokal yaratilgan modellar bilan bajarildi; bu katta model benchmark'i emas.
+**65 test o'tdi, skip yoki xato yo'q** (22.8 soniya). Testlar kichik, lokal yaratilgan modellar bilan bajarildi; bu katta model benchmark'i emas.
 
 - ONNX Runtime: haqiqiy ONNX graph CPU'da bajarildi. Ikki alohida worker jarayoni va coordinator orqali `y = 2*x + 1` natijasi tekshirildi.
 - PyTorch: saqlangan TorchScript CPU'da bajarildi; oddiy state_dict avtomatik pickle model sifatida ochilmasligi tekshirildi.
@@ -38,4 +38,6 @@ Bu ikki fizik kompyuter yoki LAN tezligi sinovi emas. Linux/macOS/Windows bazavi
 
 Istalgan format/arxitekturani avtomatik bo'lish tekshirilmagan va va'da qilinmaydi. HF eksportchi qo'llaydigan oilalar aniq sanalgan; boshqa modellar uchun mos adapter va qismlarga ajratish kerak.
 
-Go backend va C++ storage mijozi o'zgarmadi. Backend `go test ./...` / `go vet ./...` bajarilmadi: bu muhitdagi `/usr/bin/go` Go kompilyatori emas. `git diff --cached --check` ham bajarildi.
+Qo'shimcha tekshiruvda topilgan inference va storage xatolari tuzatildi: [audit natijalari](../docs/BUGFIX_REVIEW.md). Alohida o'rnatilgan Go 1.27.3 toolchain bilan backend `test -race` va `vet` o'tdi; C++ mijoz Release build va CTest 1/1 o'tdi. `git diff --cached --check` ham bajarildi.
+
+GitHub CI job'lari hisobdagi billing/spending limit sabab boshlanmagan; lokal natijalar CI yashil ekanini bildirmaydi.

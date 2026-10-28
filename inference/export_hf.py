@@ -10,6 +10,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import tempfile
 from urllib.parse import urlsplit
 
 SUPPORTED = {"gpt2", "llama", "mistral", "qwen2"}
@@ -146,35 +147,46 @@ def export_model(source, output, workers, example_length=8, full_logits=False):
     if not isinstance(eos, (list, tuple)) or any(type(token) is not int or token < 0 for token in eos):
         raise ValueError("generation config eos_token_id must be an integer or list of integers")
     eos = list(dict.fromkeys(eos))
-    output.mkdir(parents=True, exist_ok=True)
-    pipeline = {"version": 1, "inputs": ["input_ids"], "outputs": ["logits"],
-                "max_sequence_length": max_length, "eos_token_ids": eos,
-                "logits": "full" if full_logits else "last-token", "stages": []}
-    for index, (worker, shard) in enumerate(zip(workers, shards)):
-        shard_path = output / f"stage-{index}.pt"
-        shard.save(str(shard_path))
-        stage_id = f"stage{index}"
-        input_name = "input_ids" if index == 0 else "hidden_states"
-        output_name = "logits" if index == len(workers) - 1 else "hidden_states"
-        worker_config = {"version": 1, "stages": [{
-            "id": stage_id, "engine": "torchscript", "model": shard_path.name,
-            "inputs": [input_name], "outputs": [output_name],
-        }]}
-        (output / f"worker-{index}.json").write_text(json.dumps(worker_config, indent=2) + "\n")
-        pipeline["stages"].append({"worker": worker.rstrip("/"), "stage": stage_id,
-                                   "inputs": {input_name: input_name},
-                                   "outputs": {output_name: output_name}})
-    # Checkpoint directories without tokenizers remain usable through tensor API.
-    if tokenizer is not None:
-        tokenizer.save_pretrained(output / "tokenizer")
-    pipeline_path = output / "pipeline.json"
-    pipeline_path.write_text(json.dumps(pipeline, indent=2) + "\n")
-    (output / "export.json").write_text(json.dumps({
-        "architecture": config.model_type, "blocks": len(blocks), "boundaries": boundaries,
-        "dtype": "float32", "max_sequence_length": max_length, "eos_token_ids": eos,
-        "parity_checked": True, "padding": False, "kv_cache": False, "logits": "full" if full_logits else "last-token",
-    }, indent=2) + "\n")
-    return pipeline_path
+    # Publish a complete export atomically. Disk errors or interrupted writes
+    # must not leave partial shards in the destination and block a safe retry.
+    destination = output
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".sdrive-export-", dir=destination.parent) as temporary:
+        output = Path(temporary) / "artifacts"
+        output.mkdir()
+        pipeline = {"version": 1, "inputs": ["input_ids"], "outputs": ["logits"],
+                    "max_sequence_length": max_length, "eos_token_ids": eos,
+                    "logits": "full" if full_logits else "last-token", "stages": []}
+        for index, (worker, shard) in enumerate(zip(workers, shards)):
+            shard_path = output / f"stage-{index}.pt"
+            shard.save(str(shard_path))
+            stage_id = f"stage{index}"
+            input_name = "input_ids" if index == 0 else "hidden_states"
+            output_name = "logits" if index == len(workers) - 1 else "hidden_states"
+            worker_config = {"version": 1, "stages": [{
+                "id": stage_id, "engine": "torchscript", "model": shard_path.name,
+                "inputs": [input_name], "outputs": [output_name],
+            }]}
+            (output / f"worker-{index}.json").write_text(json.dumps(worker_config, indent=2) + "\n")
+            pipeline["stages"].append({"worker": worker.rstrip("/"), "stage": stage_id,
+                                       "inputs": {input_name: input_name},
+                                       "outputs": {output_name: output_name}})
+        # Checkpoint directories without tokenizers remain usable through tensor API.
+        if tokenizer is not None:
+            tokenizer.save_pretrained(output / "tokenizer")
+        pipeline_path = output / "pipeline.json"
+        pipeline_path.write_text(json.dumps(pipeline, indent=2) + "\n")
+        (output / "export.json").write_text(json.dumps({
+            "architecture": config.model_type, "blocks": len(blocks), "boundaries": boundaries,
+            "dtype": "float32", "max_sequence_length": max_length, "eos_token_ids": eos,
+            "parity_checked": True, "padding": False, "kv_cache": False, "logits": "full" if full_logits else "last-token",
+        }, indent=2) + "\n")
+        if destination.exists():
+            # rmdir only succeeds for an empty directory; never overwrite files
+            # another process may have created since the initial validation.
+            destination.rmdir()
+        output.replace(destination)
+    return destination / "pipeline.json"
 
 
 def main(argv=None):

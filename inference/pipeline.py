@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import threading
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -18,6 +19,10 @@ import numpy as np
 
 MAX_BODY = 64 * 1024 * 1024
 ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class WorkerError(RuntimeError):
+    """A configured worker failed or returned an invalid protocol response."""
 
 
 def read_manifest(path):
@@ -122,14 +127,41 @@ def remote_json(url, token, payload=None, timeout=120):
     request = Request(url, data=body, headers=headers)
     try:
         with urlopen(request, timeout=timeout) as response:
+            declared = response.headers.get("Content-Length")
+            try:
+                declared = None if declared is None else int(declared)
+            except ValueError as exc:
+                raise WorkerError(f"worker Content-Length noto'g'ri: {url}") from exc
+            if declared is not None and (declared < 0 or declared > MAX_BODY):
+                raise WorkerError(f"worker javobi limitdan oshdi: {url}")
             data = response.read(MAX_BODY + 1)
+            if declared is not None and len(data) != declared:
+                raise WorkerError(f"worker javobi to'liq kelmadi: {url}")
         if len(data) > MAX_BODY:
-            raise ValueError("worker javobi limitdan oshdi")
-        return json.loads(data)
+            raise WorkerError(f"worker javobi limitdan oshdi: {url}")
+        try:
+            result = json.loads(data)
+        except (ValueError, UnicodeError) as exc:
+            raise WorkerError(f"worker yaroqli JSON qaytarmadi: {url}") from exc
+        if not isinstance(result, dict):
+            raise WorkerError(f"worker javobi JSON obyekt bo'lishi kerak: {url}")
+        return result
     except HTTPError as exc:
-        raise RuntimeError(f"worker HTTP xatosi {exc.code}: {url}") from exc
-    except (URLError, TimeoutError) as exc:
-        raise RuntimeError(f"worker bilan aloqa yo'q: {url}: {exc.reason if isinstance(exc, URLError) else exc}") from exc
+        # Preserve useful model/runtime diagnostics without copying a whole proxy
+        # error page or an unbounded response into the coordinator's error.
+        detail = ""
+        try:
+            data = json.loads(exc.read(4096))
+            if isinstance(data, dict) and isinstance(data.get("error"), str):
+                detail = ": " + data["error"][:512]
+        except (ValueError, OSError, HTTPException):
+            pass
+        finally:
+            exc.close()
+        raise WorkerError(f"worker HTTP xatosi {exc.code}: {url}{detail}") from exc
+    except (URLError, OSError, HTTPException) as exc:
+        reason = exc.reason if isinstance(exc, URLError) else exc
+        raise WorkerError(f"worker bilan aloqa yo'q: {url}: {reason}") from exc
 
 
 class Worker:
@@ -160,7 +192,12 @@ class Worker:
         if key not in self.stages:
             raise ValueError(f"stage topilmadi: {key}")
         with self.locks[key]:
-            return self.stages[key].run(inputs)
+            outputs = self.stages[key].run(inputs)
+            if sum(array.nbytes for array in outputs.values()) > MAX_BODY // 2:
+                raise ValueError("tensorlar hajmi limitdan oshdi")
+            # A custom/native runtime can reuse its output buffers on the next
+            # call. Give this response ownership before another request runs.
+            return {name: np.array(array, copy=True) for name, array in outputs.items()}
 
 
 class Pipeline:
@@ -188,6 +225,8 @@ class Pipeline:
                 mapping = stage.get(field)
                 if not isinstance(mapping, dict) or not mapping or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v for k, v in mapping.items()):
                     raise ValueError(f"stage {field} mapping kerak")
+                if field == "outputs" and len(set(mapping.values())) != len(mapping):
+                    raise ValueError("stage output'lari bir xil pipeline tensoriga yozilmasligi kerak")
             if not set(stage["inputs"].values()) <= available:
                 raise ValueError("stage hali hisoblanmagan tensorni talab qilyapti")
             available.update(stage["outputs"].values())
@@ -197,17 +236,28 @@ class Pipeline:
             raise ValueError("pipeline output tensor topilmadi")
         self.token = token
         self.timeout = timeout
+        # Release each activation after its final consumer. A pipeline whose
+        # stages use different tensor names must not retain every layer's RAM.
+        self.last_use = {}
+        for index, stage in enumerate(self.stages):
+            for name in stage["inputs"].values():
+                self.last_use[name] = index
 
-    def check_workers(self):
+    def check_workers(self, timeout=None):
         health = {}
         for stage in self.stages:
             url = stage["worker"]
             if url not in health:
-                health[url] = remote_json(url + "/health", self.token, timeout=self.timeout)
-            if stage["stage"] not in health[url].get("stages", []):
+                health[url] = remote_json(url + "/health", self.token, timeout=self.timeout if timeout is None else timeout)
+            status = health[url]
+            advertised = status.get("stages")
+            if status.get("status") != "ok" or not isinstance(advertised, list) or any(not isinstance(key, str) for key in advertised):
+                raise WorkerError(f"worker health javobi noto'g'ri: {url}")
+            if stage["stage"] not in advertised:
                 raise ValueError(f"worker'da stage yo'q: {url}/{stage['stage']}")
 
     def health(self):
+        self.check_workers(timeout=min(self.timeout, 5))
         return {"status": "ok", "stages": len(self.stages), "workers": len({s["worker"] for s in self.stages})}
 
     def run(self, inputs):
@@ -218,15 +268,22 @@ class Pipeline:
             if ids.ndim != 2 or ids.shape[1] < 1 or ids.shape[1] > self.max_sequence_length:
                 raise ValueError("input_ids sequence model context limitiga mos emas")
         context = dict(inputs)
-        for stage in self.stages:
+        for index, stage in enumerate(self.stages):
             values = {key: context[value] for key, value in stage["inputs"].items()}
             response = remote_json(stage["worker"] + "/v1/stages/" + stage["stage"] + "/run",
                                    self.token, {"inputs": encode_tensors(values)}, timeout=self.timeout)
-            outputs = decode_tensors(response["outputs"])
+            try:
+                outputs = decode_tensors(response["outputs"])
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise WorkerError(f"worker tensor javobi noto'g'ri: {stage['stage']}: {exc}") from exc
             if set(outputs) != set(stage["outputs"]):
-                raise RuntimeError(f"worker output nomlari mos emas: {stage['stage']}")
+                raise WorkerError(f"worker output nomlari mos emas: {stage['stage']}")
             for key, value in stage["outputs"].items():
                 context[value] = outputs[key]
+            del values, outputs, response
+            for name in list(context):
+                if name not in self.outputs and self.last_use.get(name, -1) <= index:
+                    del context[name]
         return {name: context[name] for name in self.outputs}
 
 
@@ -270,9 +327,12 @@ class TextGeneration:
         reason = "length"
         for _ in range(limit):
             logits = self.pipeline.run({"input_ids": np.asarray([ids], dtype=np.int64)})["logits"]
-            if logits.ndim != 3 or (logits.shape[0] != 1 or logits.shape[1] not in (1, len(ids))):
-                raise ValueError("logits shakli [1, 1 yoki sequence, vocab] bo'lishi kerak")
-            token = int(np.argmax(logits[0, -1]))
+            if logits.ndim != 3 or (logits.shape[0] != 1 or logits.shape[1] not in (1, len(ids))) or logits.shape[2] < 1:
+                raise WorkerError("logits shakli [1, 1 yoki sequence, vocab] bo'lishi kerak")
+            scores = logits[0, -1]
+            if scores.dtype.kind not in "fiu" or np.isnan(scores).any() or not np.isfinite(scores).any():
+                raise WorkerError("model yaroqli logits qaytarmadi (NaN yoki bo'sh taqsimot)")
+            token = int(np.argmax(scores))
             generated.append(token)
             ids.append(token)
             if token in self.eos_token_ids:
@@ -314,8 +374,13 @@ def make_server(host, port, runtime, token="", text=None):
         def do_GET(self):
             if not self.authorized():
                 return
-            self.send_json(200 if self.path == "/health" else 404,
-                           runtime.health() if self.path == "/health" else {"error": "topilmadi"})
+            if self.path != "/health":
+                self.send_json(404, {"error": "topilmadi"})
+                return
+            try:
+                self.send_json(200, runtime.health())
+            except (WorkerError, ValueError) as exc:
+                self.send_json(503, {"status": "error", "error": str(exc)})
 
         def do_POST(self):
             if not self.authorized():
@@ -343,6 +408,8 @@ def make_server(host, port, runtime, token="", text=None):
                     self.send_json(404, {"error": "topilmadi"})
                     return
                 self.send_json(200, {"outputs": encode_tensors(result, binary=isinstance(runtime, Worker) or body.get("encoding") == "base64")})
+            except WorkerError as exc:
+                self.send_json(502, {"error": str(exc)})
             except (ValueError, TypeError, KeyError, OverflowError, RecursionError, binascii.Error) as exc:
                 self.send_json(400, {"error": str(exc)})
             except Exception as exc:

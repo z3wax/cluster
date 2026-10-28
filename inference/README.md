@@ -122,7 +122,7 @@ Model, manifest va adapter kodini administrator oldindan joylaydi. HTTP so'rov o
 
 Standart tinglash manzili `127.0.0.1`. Boshqa kompyuterlar uchun aniq LAN/VPN IP yozing. Pipeline uchun ixtiyoriy umumiy token `SDRIVE_INFERENCE_TOKEN` muhit o'zgaruvchisida worker'lar va asosiy serverda bir xil o'rnatiladi. Mijoz so'roviga `Authorization: Bearer ...` header'i qo'shiladi. HTTP tokenni shifrlamaydi: ishonchli LAN/VPN yoki HTTPS reverse proxy ishlating. GGUF RPC ulanishi alohida protokol; [uning tarmoq talablari](GGUF.md) farq qiladi.
 
-Bu tayyor modelni bajarish — inference; trening emas. CPU worker'lar o'z qismining vaznlari va hisoblash buffer'lari uchun RAM talab qiladi. Bitta so'rovdagi tensorlarning jami xom hajmi 32 MiB, HTTP body limiti 64 MiB. Katta aktivatsiyalar uchun context yoki batch hajmini kamaytiring. Oraliq tensor hajmi va tarmoq tezligi natijaga ta'sir qiladi; ko'proq kompyuter doim tezroq degani emas. Worker uzilganda so'rov xato qaytaradi; avtomatik ko'chirish yoki model qayta bo'lish hozir yo'q.
+Bu tayyor modelni bajarish — inference; trening emas. CPU worker'lar o'z qismining vaznlari va hisoblash buffer'lari uchun RAM talab qiladi. Bitta so'rovdagi tensorlarning jami xom hajmi 32 MiB, HTTP body limiti 64 MiB. Katta aktivatsiyalar uchun context yoki batch hajmini kamaytiring. Oraliq tensor hajmi va tarmoq tezligi natijaga ta'sir qiladi; ko'proq kompyuter doim tezroq degani emas. Worker uzilganda so'rov xato qaytaradi va `/health` 503 holatini beradi; avtomatik ko'chirish yoki model qayta bo'lish hozir yo'q.
 
 ## Tekshirish
 

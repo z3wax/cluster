@@ -53,12 +53,26 @@ def _path(config, root):
 
 def _array(value):
     if hasattr(value, "detach"):
-        value = value.detach().cpu().numpy()
+        value = value.detach().cpu()
+        try:
+            value = value.numpy()
+        except TypeError:
+            # NumPy has no native bfloat16/float8 dtype. These values are exactly
+            # representable in float32, which the tensor transport understands.
+            if not value.is_floating_point():
+                raise
+            value = value.float().numpy()
     elif hasattr(value, "numpy"):
         value = value.numpy()
     array = np.asarray(value)
+    if array.dtype.name == "bfloat16" or array.dtype.name.startswith("float8_"):
+        array = array.astype(np.float32)
     if array.dtype.kind not in "biuf":
         raise ValueError(f"faqat boolean, integer va floating tensorlar qo'llanadi: {array.dtype}")
+    if not array.dtype.isnative:
+        # The wire records byte order, but native CPU runtimes require host
+        # byte order. astype converts values rather than reinterpreting bytes.
+        array = array.astype(array.dtype.newbyteorder("="))
     return array
 
 
@@ -156,13 +170,42 @@ def load_stage(config, root, threads=1):
             if signature not in model.signatures:
                 raise ValueError(f"SavedModel signature topilmadi: {signature}")
             call = model.signatures[signature]
+            positional, keyword = call.structured_input_signature
+            if positional or set(inputs) != set(keyword):
+                raise ValueError(f"SavedModel input nomlari mos emas: {sorted(keyword)}")
+            if isinstance(call.structured_outputs, dict) and not set(outputs).issubset(call.structured_outputs):
+                raise ValueError(f"SavedModel output nomlari mos emas: {sorted(call.structured_outputs)}")
             def execute(values):
                 with tf.device("/CPU:0"):
                     return call(**{name: tf.convert_to_tensor(values[name]) for name in inputs})
         else:
             model = tf.keras.models.load_model(str(path), compile=False, safe_mode=True)
+            try:
+                structure = model.input
+            except AttributeError:
+                structure = None
+            # Functional/Sequential Keras models retain named input structure.
+            # Binding by manifest order silently swaps named multi-input models.
+            if structure is not None:
+                def tensor_name(tensor):
+                    return tensor.name.split(":", 1)[0]
+                expected = [tensor_name(tensor) for tensor in tf.nest.flatten(structure)]
+                if len(expected) == len(inputs) == 1:
+                    # Preserve the existing single-input manifest alias contract.
+                    bindings = {expected[0]: inputs[0]}
+                elif len(set(expected)) != len(expected) or set(inputs) != set(expected):
+                    raise ValueError(f"Keras input nomlari mos emas: {expected}")
+                else:
+                    bindings = {name: name for name in expected}
             def execute(values):
                 with tf.device("/CPU:0"):
-                    tensors = [tf.convert_to_tensor(values[name]) for name in inputs]
-                    return model(tensors[0] if len(tensors) == 1 else tensors, training=False)
+                    if structure is not None:
+                        tensors = tf.nest.map_structure(
+                            lambda tensor: tf.convert_to_tensor(values[bindings[tensor_name(tensor)]]), structure)
+                    else:
+                        # A subclassed model may not expose a symbolic signature;
+                        # its declared manifest order is the explicit contract.
+                        tensors = [tf.convert_to_tensor(values[name]) for name in inputs]
+                        tensors = tensors[0] if len(tensors) == 1 else tensors
+                    return model(tensors, training=False)
     return _Stage(config, execute)

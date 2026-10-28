@@ -45,13 +45,13 @@ class LauncherTests(unittest.TestCase):
             model.touch()
             executable = Path(folder) / ("llama-server.exe" if cluster.os.name == "nt" else "llama-server")
             executable.touch()
-            with patch.object(cluster.socket, "create_connection", side_effect=OSError("unreachable")), patch.object(cluster.subprocess, "call") as run, contextlib.redirect_stderr(io.StringIO()):
+            with patch.object(cluster.socket, "create_connection", side_effect=OSError("unreachable")), patch.object(cluster, "run_child") as run, contextlib.redirect_stderr(io.StringIO()):
                 code = cluster.main(["serve", "--bin-dir", folder, "--model", str(model), "--workers", "a:1,b:2"])
                 self.assertEqual(code, 2)
                 run.assert_not_called()
 
     def test_missing_model_fails_without_starting_process(self):
-        with patch.object(cluster.subprocess, "call") as run, contextlib.redirect_stderr(io.StringIO()):
+        with patch.object(cluster, "run_child") as run, contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cluster.main(["serve", "--bin-dir", ".", "--model", "/missing/model.gguf", "--workers", "a:1,b:2"]), 2)
             run.assert_not_called()
 
