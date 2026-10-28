@@ -1,5 +1,10 @@
 #include "net.h"
+#include <algorithm>
+#include <cerrno>
+#include <cctype>
+#include <climits>
 #include <cstring>
+#include <limits>
 #include <sstream>
 
 #ifdef _WIN32
@@ -17,7 +22,6 @@ using sock_t = SOCKET;
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <fcntl.h>
 using sock_t = int;
 #define CLOSE_SOCK(s) ::close(s)
 #define SOCK_ERR (-1)
@@ -31,6 +35,14 @@ static int lastErr() {
     return (int)WSAGetLastError();
 #else
     return errno;
+#endif
+}
+
+static bool interrupted() {
+#ifdef _WIN32
+    return lastErr() == WSAEINTR;
+#else
+    return lastErr() == EINTR;
 #endif
 }
 
@@ -52,141 +64,220 @@ void netCleanup() {
 #endif
 }
 
-static int resolveHost(const std::string& host, sockaddr_in& addr) {
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    struct hostent* he = gethostbyname(host.c_str());
-    if (he && he->h_addr_list[0]) {
-        memcpy(&addr.sin_addr, he->h_addr_list[0], sizeof(addr.sin_addr));
-        return 0;
+static bool resolveHost(const std::string& host, sockaddr_in& addr) {
+    addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* result = nullptr;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &result) != 0) return false;
+    bool found = result && result->ai_addrlen >= sizeof(addr);
+    if (found) std::memcpy(&addr, result->ai_addr, sizeof(addr));
+    if (result) freeaddrinfo(result);
+    return found;
+}
+
+static bool sendAll(sock_t socket, const std::string& data) {
+    size_t offset = 0;
+    while (offset < data.size()) {
+        int flags = 0;
+#ifdef MSG_NOSIGNAL
+        flags = MSG_NOSIGNAL;
+#endif
+        int count = static_cast<int>(std::min(data.size() - offset, static_cast<size_t>(INT_MAX)));
+        int sent = ::send(socket, data.data() + offset, count, flags);
+        if (sent == SOCKET_ERROR && interrupted()) continue;
+        if (sent <= 0) return false;
+        offset += static_cast<size_t>(sent);
     }
-    unsigned long ip = inet_addr(host.c_str());
-    if (ip != INADDR_NONE) {
-        addr.sin_addr.s_addr = ip;
-        return 0;
+    return true;
+}
+
+static std::string trim(const std::string& value) {
+    const size_t first = value.find_first_not_of(" \t\r\n");
+    return first == std::string::npos ? "" : value.substr(first, value.find_last_not_of(" \t\r\n") - first + 1);
+}
+
+static std::string lower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+static bool parseSize(const std::string& text, size_t& result, unsigned base = 10) {
+    if (text.empty()) return false;
+    result = 0;
+    for (unsigned char ch : text) {
+        unsigned digit;
+        if (ch >= '0' && ch <= '9') digit = ch - '0';
+        else if (ch >= 'a' && ch <= 'f') digit = ch - 'a' + 10;
+        else if (ch >= 'A' && ch <= 'F') digit = ch - 'A' + 10;
+        else return false;
+        if (digit >= base || result > (std::numeric_limits<size_t>::max() - digit) / base) return false;
+        result = result * base + digit;
     }
-    return -1;
+    return true;
+}
+
+static bool decodeChunked(const std::string& input, std::string& output) {
+    size_t offset = 0;
+    output.clear();
+    while (true) {
+        const size_t lineEnd = input.find("\r\n", offset);
+        if (lineEnd == std::string::npos) return false;
+        std::string length = input.substr(offset, lineEnd - offset);
+        const size_t extension = length.find(';');
+        if (extension != std::string::npos) length.resize(extension);
+        size_t count;
+        if (!parseSize(trim(length), count, 16)) return false;
+        offset = lineEnd + 2;
+        if (count == 0) {
+            // Consume trailers, including the mandatory final empty line.
+            while (true) {
+                const size_t end = input.find("\r\n", offset);
+                if (end == std::string::npos) return false;
+                if (end == offset) return end + 2 == input.size();
+                if (input.find(':', offset) >= end) return false;
+                offset = end + 2;
+            }
+        }
+        if (count > input.size() - offset) return false;
+        output.append(input, offset, count);
+        offset += count;
+        if (input.size() - offset < 2 || input.compare(offset, 2, "\r\n") != 0) return false;
+        offset += 2;
+    }
+}
+
+static bool parseResponse(const std::string& raw, const std::string& method, HttpResp& resp) {
+    const size_t headerEnd = raw.find("\r\n\r\n");
+    if (headerEnd == std::string::npos) return false;
+    std::istringstream lines(raw.substr(0, headerEnd));
+    std::string line;
+    if (!std::getline(lines, line)) return false;
+    std::istringstream statusLine(line);
+    std::string version, status;
+    if (!(statusLine >> version >> status) || (version != "HTTP/1.0" && version != "HTTP/1.1")) return false;
+    size_t code;
+    if (status.size() != 3 || !parseSize(status, code) || code < 100 || code > 599) return false;
+    std::map<std::string, std::string> headers;
+    while (std::getline(lines, line)) {
+        const size_t colon = line.find(':');
+        if (colon == std::string::npos || colon == 0) return false;
+        std::string key = trim(line.substr(0, colon));
+        std::string value = trim(line.substr(colon + 1));
+        std::string normalized = lower(key);
+        auto previous = headers.find(normalized);
+        if (previous != headers.end()) {
+            if (normalized == "content-length") {
+                if (previous->second != value) return false;
+            } else {
+                value = previous->second + ", " + value;
+            }
+        }
+        headers[normalized] = value;
+        resp.headers[key] = value;
+    }
+    std::string encoded = raw.substr(headerEnd + 4);
+    if (method == "HEAD" || code == 204 || code == 304) {
+        if (!encoded.empty()) return false;
+        resp.body.clear();
+    } else if (headers.count("transfer-encoding")) {
+        // Only chunked is implemented: never hand encoded framing to JSON/storage.
+        if (lower(headers["transfer-encoding"]) != "chunked" || headers.count("content-length")) return false;
+        if (!decodeChunked(encoded, resp.body)) return false;
+    } else if (headers.count("content-length")) {
+        size_t expected;
+        if (!parseSize(headers["content-length"], expected) || encoded.size() != expected) return false;
+        resp.body = std::move(encoded);
+    } else {
+        resp.body = std::move(encoded); // HTTP close-delimited response
+    }
+    resp.status = static_cast<int>(code);
+    return true;
 }
 
 HttpResp http_request(const std::string& method, const std::string& url,
                       const std::string& body, const std::string& contentType) {
     HttpResp resp;
     if (!netInit()) { resp.error = "net init failed"; return resp; }
-
-    // url parse: scheme://host[:port]/path
-    std::string rest = url;
-    size_t p = rest.find("://");
-    if (p != std::string::npos) rest = rest.substr(p + 3);
-    else { fprintf(stderr, "[net] url xato\n"); return resp; }
-    std::string host, path = "/";
-    p = rest.find('/');
-    if (p != std::string::npos) { host = rest.substr(0, p); path = rest.substr(p); }
-    else host = rest;
-    if (host.empty()) { fprintf(stderr, "[net] host bo'sh\n"); return resp; }
-
-    int port = 80;
-    p = host.find(':');
-    if (p != std::string::npos) {
-        port = std::atoi(host.substr(p + 1).c_str());
-        host = host.substr(0, p);
+    // This raw socket client has no TLS implementation. Fail explicitly for HTTPS.
+    if (url.compare(0, 7, "http://") != 0) { resp.error = "only http:// URLs are supported"; return resp; }
+    if (method.empty() || method.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ") != std::string::npos ||
+        contentType.find_first_of("\r\n") != std::string::npos || url.find_first_of("\r\n") != std::string::npos) {
+        resp.error = "invalid HTTP request";
+        return resp;
     }
-    fprintf(stderr, "[net] ulanish: host=%s port=%d path=%s\n", host.c_str(), port, path.c_str());
+    std::string rest = url.substr(7);
+    const size_t fragment = rest.find('#');
+    if (fragment != std::string::npos) rest.resize(fragment);
+    const size_t pathStart = rest.find_first_of("/?");
+    std::string authority = rest.substr(0, pathStart);
+    std::string path = pathStart == std::string::npos ? "/" : rest.substr(pathStart);
+    if (path.front() == '?') path.insert(0, "/");
+    std::string host = authority;
+    size_t port = 80;
+    const size_t colon = authority.find(':');
+    if (colon != std::string::npos) {
+        host = authority.substr(0, colon);
+        if (!parseSize(authority.substr(colon + 1), port) || port < 1 || port > 65535) {
+            resp.error = "invalid HTTP port";
+            return resp;
+        }
+    }
+    if (host.empty() || host.find_first_of(" @[]\t") != std::string::npos || path.find(' ') != std::string::npos) {
+        resp.error = "invalid HTTP host or path";
+        return resp;
+    }
 
-    sock_t s = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (s == SOCK_ERR) { fprintf(stderr, "[net] socket fail: %d\n", lastErr()); resp.error = "socket fail"; return resp; }
+    sock_t socket = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (socket == SOCK_ERR) { resp.error = "socket fail"; return resp; }
 #ifdef _WIN32
-    DWORD to = 15000;
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&to, sizeof(to));
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&to, sizeof(to));
+    DWORD timeout = 15000;
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+    setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 #else
-    timeval tv; tv.tv_sec = 15; tv.tv_usec = 0;
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    timeval timeout{};
+    timeout.tv_sec = 15;
+    setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#ifdef SO_NOSIGPIPE
+    int noSigpipe = 1;
+    setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE, &noSigpipe, sizeof(noSigpipe));
 #endif
-
-    sockaddr_in addr;
-    if (resolveHost(host, addr) != 0) { fprintf(stderr, "[net] dns fail\n"); CLOSE_SOCK(s); resp.error = "dns fail: " + host; return resp; }
-    addr.sin_port = htons((unsigned short)port);
-
-    fprintf(stderr, "[net] connect...\n");
-    if (::connect(s, (struct sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-        fprintf(stderr, "[net] connect fail: %d\n", lastErr());
-        CLOSE_SOCK(s);
+#endif
+    sockaddr_in address{};
+    if (!resolveHost(host, address)) { CLOSE_SOCK(socket); resp.error = "dns fail: " + host; return resp; }
+    address.sin_port = htons(static_cast<unsigned short>(port));
+    if (::connect(socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+        CLOSE_SOCK(socket);
         resp.error = "connect fail";
         return resp;
     }
-    fprintf(stderr, "[net] connected, send...\n");
-
-    std::ostringstream req;
-    req << method << " " << path << " HTTP/1.1\r\n"
-        << "Host: " << host << ":" << port << "\r\n"
-        << "User-Agent: SDriveClient/1.0\r\n"
-        << "Connection: close\r\n";
+    std::ostringstream request;
+    request << method << " " << path << " HTTP/1.1\r\n"
+            << "Host: " << host << ":" << port << "\r\n"
+            << "User-Agent: SDriveClient/1.0\r\nConnection: close\r\n";
     if (!body.empty() || method == "POST" || method == "PUT") {
-        req << "Content-Type: " << contentType << "\r\n"
-            << "Content-Length: " << body.size() << "\r\n";
+        request << "Content-Type: " << contentType << "\r\nContent-Length: " << body.size() << "\r\n";
     }
-    req << "\r\n";
-    std::string head = req.str();
-    fprintf(stderr, "[net] head %d bayt, body %d bayt\n", (int)head.size(), (int)body.size());
-    int sr = ::send(s, head.c_str(), (int)head.size(), 0);
-    fprintf(stderr, "[net] send head = %d (err %d)\n", sr, sr == SOCKET_ERROR ? lastErr() : 0);
-    if (sr == SOCKET_ERROR) { CLOSE_SOCK(s); resp.error = "send fail"; return resp; }
-    if (!body.empty()) {
-        int br = ::send(s, body.c_str(), (int)body.size(), 0);
-        fprintf(stderr, "[net] send body = %d (err %d)\n", br, br == SOCKET_ERROR ? lastErr() : 0);
-        if (br == SOCKET_ERROR) { CLOSE_SOCK(s); resp.error = "send fail"; return resp; }
-    }
-
-    fprintf(stderr, "[net] recv...\n");
-    std::string raw;
-    char buf[65536];
-    int n;
-    while ((n = ::recv(s, buf, sizeof(buf), 0)) > 0) raw.append(buf, (size_t)n);
-    fprintf(stderr, "[net] recv done n=%d (err %d) total=%d\n", n, n == SOCKET_ERROR ? lastErr() : 0, (int)raw.size());
-    CLOSE_SOCK(s);
-    fprintf(stderr, "[net] socket yopildi\n");
-    if (raw.empty()) { resp.error = "no data"; return resp; }
-
-    // status qator + headerlar
-    size_t hEnd = raw.find("\r\n\r\n");
-    size_t headerDelimLen = 4;
-    if (hEnd == std::string::npos) {
-        hEnd = raw.find("\n\n");
-        headerDelimLen = 2;
-    }
-    if (hEnd == std::string::npos) {
-        resp.body = raw;
-        resp.status = 200;
+    request << "\r\n";
+    if (!sendAll(socket, request.str()) || !sendAll(socket, body)) {
+        CLOSE_SOCK(socket);
+        resp.error = "send fail";
         return resp;
     }
-
-    std::string headBlock = raw.substr(0, hEnd);
-    resp.body = raw.substr(hEnd + headerDelimLen);
-
-    size_t sp1 = headBlock.find(' ');
-    if (sp1 != std::string::npos) {
-        resp.status = std::atoi(headBlock.c_str() + sp1 + 1);
+    std::string raw;
+    char buffer[65536];
+    int received;
+    do {
+        received = ::recv(socket, buffer, sizeof(buffer), 0);
+        if (received > 0) raw.append(buffer, static_cast<size_t>(received));
+    } while (received > 0 || (received == SOCKET_ERROR && interrupted()));
+    CLOSE_SOCK(socket);
+    if (received == SOCKET_ERROR) { resp.error = "receive failed or timed out"; return resp; }
+    if (!parseResponse(raw, method, resp)) {
+        resp.status = 0;
+        resp.body.clear();
+        resp.error = "invalid or incomplete HTTP response";
     }
-    size_t pos = 0;
-    while (pos < headBlock.size()) {
-        size_t eol = headBlock.find("\r\n", pos);
-        size_t lineLen = 2;
-        if (eol == std::string::npos) {
-            eol = headBlock.find('\n', pos);
-            lineLen = 1;
-        }
-        if (eol == std::string::npos) break;
-        std::string line = headBlock.substr(pos, eol - pos);
-        size_t colon = line.find(':');
-        if (colon != std::string::npos) {
-            std::string k = line.substr(0, colon);
-            std::string v = line.substr(colon + 1);
-            while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.erase(v.begin());
-            resp.headers[k] = v;
-        }
-        pos = eol + lineLen;
-    }
-    fprintf(stderr, "[net] qaytmoqda status=%d\n", resp.status);
     return resp;
 }

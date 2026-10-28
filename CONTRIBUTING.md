@@ -12,6 +12,14 @@
 
 `backend/` ichida `go test ./...` va `go vet ./...` bajaring. Mijoz o'zgarishida operatsion tizim, CMake va kompilyatorni ko'rsating.
 
+```bash
+cmake -S client -B build/client -DCMAKE_BUILD_TYPE=Release
+cmake --build build/client -j 2
+ctest --test-dir build/client --output-on-failure
+```
+
+Inference o'zgarishlari uchun mos runtime paketlarini o'rnatib `python -m unittest discover -s inference/tests -v` bajaring; [inference qo'llanmasi](inference/README.md) kerakli bog'liqliklarni ko'rsatadi.
+
 Tekshiruvni bajarmagan bo'lsangiz, buni aniq yozing. Muayyan muhitga ehtiyoj borligini muvaffaqiyatli test deb ko'rsatmang.
 
 ## Pull request tarkibi

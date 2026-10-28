@@ -108,7 +108,9 @@ func sweeper(db *DB) {
 		}
 		db.mu.Unlock()
 		if changed {
-			db.Save()
+			if err := db.Save(); err != nil {
+				log.Printf("offline holatini saqlashda xato: %v", err)
+			}
 		}
 	}
 }

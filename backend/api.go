@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,6 +27,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]any{"error": msg})
+}
+
+// save reports durability failures instead of acknowledging an unsaved mutation.
+// The in-memory mutation remains available for a retry; this is not a rollback.
+func (a *api) save(w http.ResponseWriter) bool {
+	if err := a.db.Save(); err != nil {
+		log.Printf("DB saqlashda xato: %v", err)
+		writeErr(w, http.StatusInternalServerError, "ma'lumotlarni saqlashda xato")
+		return false
+	}
+	return true
 }
 
 // ---------------- Node register ----------------
@@ -60,7 +72,9 @@ func (a *api) register(w http.ResponseWriter, r *http.Request) {
 	n.Online = true
 	n.LastSeen = now()
 	a.db.mu.Unlock()
-	a.db.Save()
+	if !a.save(w) {
+		return
+	}
 
 	writeJSON(w, 200, map[string]any{
 		"ok":                  true,
@@ -109,15 +123,18 @@ func (a *api) heartbeat(w http.ResponseWriter, r *http.Request) {
 			tasksDue++
 		}
 	}
+	earnings, uptime := n.EarningsCents, n.VerifiedUptimeSec
 	a.db.mu.Unlock()
-	a.db.Save()
+	if !a.save(w) {
+		return
+	}
 
 	writeJSON(w, 200, map[string]any{
-		"ok":            true,
-		"tasksDue":      tasksDue,
-		"earningsCents": n.EarningsCents,
-		"verifiedUptime": n.VerifiedUptimeSec,
-		"serverTime":    ts,
+		"ok":             true,
+		"tasksDue":       tasksDue,
+		"earningsCents":  earnings,
+		"verifiedUptime": uptime,
+		"serverTime":     ts,
 	})
 }
 
@@ -131,7 +148,7 @@ func (a *api) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	size, err := strconv.ParseInt(sizeStr, 10, 64)
-	if err != nil {
+	if err != nil || size < 0 {
 		writeErr(w, 400, "size noto'g'ri")
 		return
 	}
@@ -144,12 +161,21 @@ func (a *api) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	committed := false
+	defer func() {
+		if !committed {
+			os.RemoveAll(dir)
+		}
+	}()
+	// Bound reads to the declared size plus one byte, so oversized bodies are
+	// rejected without filling disk. A mismatch must never become a valid file.
+	body := io.LimitReader(r.Body, size)
 	buf := make([]byte, ChunkSize)
 	var chunks []Chunk
 	idx := 0
 	var total int64
 	for {
-		n, err := io.ReadFull(r.Body, buf)
+		n, err := io.ReadFull(body, buf)
 		if n > 0 {
 			cp := filepath.Join(dir, fmt.Sprintf("%d.bin", idx))
 			if werr := os.WriteFile(cp, buf[:n], 0o644); werr != nil {
@@ -164,8 +190,18 @@ func (a *api) upload(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if err != nil {
-			break
+			writeErr(w, 400, "faylni o'qishda xato")
+			return
 		}
+	}
+	if total != size {
+		writeErr(w, 400, "fayl hajmi size bilan mos emas")
+		return
+	}
+	var extra [1]byte
+	if count, err := io.ReadFull(r.Body, extra[:]); count != 0 || err != io.EOF {
+		writeErr(w, 400, "fayl hajmi size bilan mos emas")
+		return
 	}
 
 	a.db.mu.Lock()
@@ -184,6 +220,7 @@ func (a *api) upload(w http.ResponseWriter, r *http.Request) {
 		Status:        "active",
 	}
 	a.db.Files[fileID] = f
+	committed = true
 	for _, nd := range picked {
 		t := &Task{
 			ID:         randomID("t"),
@@ -197,7 +234,9 @@ func (a *api) upload(w http.ResponseWriter, r *http.Request) {
 		a.db.Tasks[t.ID] = t
 	}
 	a.db.mu.Unlock()
-	a.db.Save()
+	if !a.save(w) {
+		return
+	}
 
 	writeJSON(w, 200, map[string]any{
 		"ok":            true,
@@ -214,10 +253,10 @@ func (a *api) upload(w http.ResponseWriter, r *http.Request) {
 func (a *api) nodeTasks(w http.ResponseWriter, r *http.Request) {
 	nodeID := r.PathValue("id")
 	a.db.mu.RLock()
-	var out []*Task
+	var out []Task
 	for _, t := range a.db.Tasks {
 		if t.NodeID == nodeID && t.Status == "pending" {
-			out = append(out, t)
+			out = append(out, *t)
 		}
 	}
 	a.db.mu.RUnlock()
@@ -228,8 +267,26 @@ func (a *api) chunkDownload(w http.ResponseWriter, r *http.Request) {
 	fileID := r.PathValue("fileId")
 	idxStr := r.PathValue("idx")
 	idx, err := strconv.Atoi(idxStr)
-	if err != nil {
+	if err != nil || idx < 0 {
 		writeErr(w, 400, "idx noto'g'ri")
+		return
+	}
+	// PathValue decodes escaped slashes: never use an unverified fileId to
+	// construct a filesystem path (e.g. an encoded ../ outside chunks/).
+	a.db.mu.RLock()
+	file, exists := a.db.Files[fileID]
+	validChunk := false
+	if exists {
+		for _, chunk := range file.Chunks {
+			if chunk.Index == idx {
+				validChunk = true
+				break
+			}
+		}
+	}
+	a.db.mu.RUnlock()
+	if !validChunk {
+		writeErr(w, 404, "chunk topilmadi")
 		return
 	}
 	path := filepath.Join(a.data, "chunks", fileID, fmt.Sprintf("%d.bin", idx))
@@ -302,7 +359,9 @@ func (a *api) taskDone(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.db.mu.Unlock()
-	a.db.Save()
+	if !a.save(w) {
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -344,7 +403,9 @@ func (a *api) repair(w http.ResponseWriter, r *http.Request) {
 	}
 	a.db.Tasks[t.ID] = t
 	a.db.mu.Unlock()
-	a.db.Save()
+	if !a.save(w) {
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true, "taskId": t.ID})
 }
 
@@ -366,11 +427,13 @@ func (a *api) nodeInfo(w http.ResponseWriter, r *http.Request) {
 			pending++
 		}
 	}
+	node := *n
+	node.StoredFiles = append([]string(nil), n.StoredFiles...)
 	a.db.mu.RUnlock()
 	writeJSON(w, 200, map[string]any{
-		"node":              n,
-		"storedBytes":       stored,
-		"pendingTasks":      pending,
+		"node":               node,
+		"storedBytes":        stored,
+		"pendingTasks":       pending,
 		"rateCentsPerGBHour": RateCentsPerGBH,
 	})
 }
@@ -380,7 +443,9 @@ func (a *api) uninstall(w http.ResponseWriter, r *http.Request) {
 	a.db.mu.Lock()
 	a.db.uninstallNode(nodeID)
 	a.db.mu.Unlock()
-	a.db.Save()
+	if !a.save(w) {
+		return
+	}
 	writeJSON(w, 200, map[string]any{"ok": true, "note": "payout olinmagan oy yo'qotiladi (shartnoma 6.2-band)"})
 }
 
@@ -399,11 +464,13 @@ func (a *api) claim(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err.Error())
 		return
 	}
-	a.db.Save()
+	if !a.save(w) {
+		return
+	}
 	writeJSON(w, 200, map[string]any{
-		"ok":          true,
-		"payout":      p,
-		"note":        "Oy oxiridagi payout rasmiylashtirildi",
+		"ok":     true,
+		"payout": p,
+		"note":   "Oy oxiridagi payout rasmiylashtirildi",
 	})
 }
 
@@ -442,38 +509,38 @@ func (a *api) info(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]any{
-		"totalNodes":    totalNodes,
-		"onlineNodes":   online,
-		"totalSpace":    totalSpace,
-		"usedSpace":     usedSpace,
-		"storedBytes":   storedBytes,
-		"totalFiles":    totalFiles,
-		"doneReplicas":  doneReplicas,
-		"pendingTasks":  pendingTasks,
-		"paidCents":     paidCents,
-		"replicaRatio":  ReplicaRatio,
-		"rate":          RateCentsPerGBH,
-		"serverTime":    now(),
+		"totalNodes":   totalNodes,
+		"onlineNodes":  online,
+		"totalSpace":   totalSpace,
+		"usedSpace":    usedSpace,
+		"storedBytes":  storedBytes,
+		"totalFiles":   totalFiles,
+		"doneReplicas": doneReplicas,
+		"pendingTasks": pendingTasks,
+		"paidCents":    paidCents,
+		"replicaRatio": ReplicaRatio,
+		"rate":         RateCentsPerGBH,
+		"serverTime":   now(),
 	})
 }
 
 func (a *api) dashboard(w http.ResponseWriter, r *http.Request) {
 	a.db.mu.RLock()
-	nodes := make([]*Node, 0, len(a.db.Nodes))
+	nodes := make([]Node, 0, len(a.db.Nodes))
 	for _, n := range a.db.Nodes {
-		nodes = append(nodes, n)
+		nodes = append(nodes, *n)
 	}
-	files := make([]*File, 0, len(a.db.Files))
+	files := make([]File, 0, len(a.db.Files))
 	for _, f := range a.db.Files {
-		files = append(files, f)
+		files = append(files, *f)
 	}
-	tasks := make([]*Task, 0, len(a.db.Tasks))
+	tasks := make([]Task, 0, len(a.db.Tasks))
 	for _, t := range a.db.Tasks {
-		tasks = append(tasks, t)
+		tasks = append(tasks, *t)
 	}
-	payouts := make([]*Payout, 0, len(a.db.Payouts))
+	payouts := make([]Payout, 0, len(a.db.Payouts))
 	for _, p := range a.db.Payouts {
-		payouts = append(payouts, p)
+		payouts = append(payouts, *p)
 	}
 	a.db.mu.RUnlock()
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].JoinedAt > nodes[j].JoinedAt })
