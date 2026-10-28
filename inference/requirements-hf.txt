@@ -1,0 +1,4 @@
+-r requirements-torch.txt
+# Exporter uses these Transformers attention/block APIs and verifies shard parity.
+transformers==4.57.6
+safetensors>=0.4,<1

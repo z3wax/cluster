@@ -21,7 +21,12 @@ Go HTTP backend, brauzer interfeysi va CMake asosidagi mijozni birlashtiruvchi k
 | [backend/](backend/) | Go server va API |
 | [backend/web/](backend/web/) | Server uzatadigan statik interfeys |
 | [client/](client/) | CMake asosidagi mijoz |
+| [inference/](inference/) | Bir modelni bir nechta CPU'da ishlatish |
 | [SHARTNOMA.md](SHARTNOMA.md) | Loyiha shartnomasi |
+
+## Bir modelni bir nechta CPU'da ishlatish
+
+[inference/README.md](inference/README.md) — GGUF, ONNX, TorchScript, TensorFlow/Keras va Hugging Face model qismlarini kompyuter CPU'lari orasida taqsimlash. Boshqa formatlar uchun adapter ulash mumkin. Har bir model o'z runtime'i va arxitekturasiga mos tayyorlanadi.
 
 ## Backendni ishga tushirish
 
