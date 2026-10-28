@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "stages": [
+    {
+      "id": "encoder",
+      "engine": "onnx",
+      "model": "encoder.onnx",
+      "inputs": ["x"],
+      "outputs": ["hidden"]
+    }
+  ]
+}

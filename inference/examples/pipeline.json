@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "inputs": ["x"],
+  "outputs": ["y"],
+  "stages": [
+    {
+      "worker": "http://192.168.1.11:50052",
+      "stage": "encoder",
+      "inputs": {"x": "x"},
+      "outputs": {"hidden": "hidden"}
+    },
+    {
+      "worker": "http://192.168.1.12:50052",
+      "stage": "head",
+      "inputs": {"hidden": "hidden"},
+      "outputs": {"y": "y"}
+    }
+  ]
+}

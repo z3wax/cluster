@@ -1,74 +1,133 @@
 # Bir modelni bir nechta kompyuter CPU'sida ishlatish
 
-Bu modul bitta GGUF til modelining qatlamlarini `llama.cpp` RPC orqali bir nechta CPU worker orasida taqsimlaydi. Asosiy kompyuter modelni yuklaydi, worker'larga vaznlarni uzatadi va OpenAI formatidagi HTTP API beradi. Mavjud Go storage serveri va C++ storage mijozi alohida ishlaydi; ularni ishga tushirish CPU inference'ni avtomatik boshlamaydi.
+SDrive inference bitta modelning qismlarini turli kompyuterlarda bajaradi. GGUF uchun `llama.cpp` RPC, boshqa formatlar uchun tensorlarni worker'lar orasida uzatadigan pipeline backend ishlatiladi. Til, tasvir va boshqa sonli tensor bilan ishlaydigan modellarni ulash mumkin. Go storage serveri va C++ storage mijozi alohida ishlaydi.
 
-## Talablar va yig'ish
+## Format va runtime tanlash
 
-Har bir qatnashuvchi kompyuterda Git, CMake 3.16+, C++17 kompilyator va Python 3.10+ kerak. Windows'da Visual Studio C++ Build Tools, Linux'da GCC/Clang ishlating. Barcha kompyuterlarda **bir xil commit** yig'ilsin; RPC protokoli versiyalar orasida mos kelmasligi mumkin.
+| Model ko'rinishi | Backend / engine | Modelni taqsimlash |
+|---|---|---|
+| GGUF | `gguf` / llama.cpp RPC | Qatlamlarni runtime taqsimlaydi; [GGUF qo'llanmasi](GGUF.md) |
+| ONNX `.onnx` | `pipeline` / `onnx` | Oldindan ajratilgan graph qismlari |
+| TorchScript `.pt`, `.pth` | `pipeline` / `torchscript` | Oldindan ajratilgan scripted/traced modullar |
+| TensorFlow SavedModel | `pipeline` / `tensorflow` | Har bir qismning SavedModel katalogi |
+| Keras `.keras`, `.h5` | `pipeline` / `keras` | Har bir qismning saqlangan Keras modeli |
+| Hugging Face `config.json` + `.safetensors` / `pytorch_model.bin` | HF eksporti → `torchscript` | Qo'llab-quvvatlangan arxitektura qatlamlarini eksportchi ajratadi |
+| Boshqa format yoki xom checkpoint | `pipeline` / `python` | Model arxitekturasini biladigan adapter orqali |
 
-Tekshirish uchun tanlangan llama.cpp commit: `8ca4060b7e30e76baaa5670ee1ec1b760b7f8552`.
+Format faylning qanday saqlanganini bildiradi. Modelni bajarish uchun uning arxitekturasi va mos runtime ham kerak: masalan, oddiy `.pth` yoki `.safetensors` fayli o'zidan-o'zi bajariladigan graph emas. Istalgan modelni avtomatik ajratish kafolati yo'q. ONNX, TensorFlow va TorchScript qismlarining input/output tensorlari bir-biriga mos bo'lishi kerak; butun modelning nusxasini har bir worker'ga yuklash modelni taqsimlash hisoblanmaydi.
 
-```bash
-git clone https://github.com/ggml-org/llama.cpp.git
-git -C llama.cpp checkout 8ca4060b7e30e76baaa5670ee1ec1b760b7f8552
-cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release -DGGML_RPC=ON -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF -DGGML_SYCL=OFF -DLLAMA_BUILD_TESTS=OFF
-cmake --build llama.cpp/build --config Release --target ggml-rpc-server llama-server -j 4
-```
+## Pipeline: ikki kompyuterda ishga tushirish
 
-Quyidagi buyruqlarni `cluster/` katalogidan bajaring. `--bin-dir` haqiqiy binary katalogi bo'lsin; Visual Studio build'da odatda `llama.cpp/build/bin/Release`. Mac'da ham Metal o'chirilgani uchun CPU ishlatiladi.
-
-## 1. Worker kompyuterlar
-
-Misolda LAN IP'lari `192.168.1.11` va `192.168.1.12`. Har birida o'z IP manzilini yozing:
-
-```bash
-python3 inference/cluster.py worker --bin-dir ../llama.cpp/build/bin --host 192.168.1.11 --port 50052 --threads 4
-```
-
-Ikkinchi kompyuterda `--host 192.168.1.12` bo'ladi. Windows'da `python3` o'rniga `python` ishlatish mumkin. Model fayli faqat asosiy kompyuterda kerak. Worker'dagi `--threads` o'sha kompyuter CPU ishchi oqimlari sonini belgilaydi; standart qiymat mantiqiy CPU'larning yarmi.
-
-**RPC autentifikatsiya va TLS bermaydi, upstream uni tajribaviy deb belgilagan.** Faqat ishonchli LAN/VPN ishlating; worker portiga firewall orqali faqat asosiy kompyuterni kiriting. Portni internetga ochmang. Standart bind `127.0.0.1`; boshqa kompyuterdan ulanish uchun LAN IP'ni aniq ko'rsatish kerak.
-
-## 2. Asosiy kompyuter
-
-O'zingiz ishlatish huquqiga ega bo'lgan GGUF model faylini tayyorlang. Ikki worker uchun:
+Har bir kompyuterga Python 3.10+ va ishlatiladigan engine bog'liqliklarini o'rnating. Faqat kerakli runtime'ni tanlang:
 
 ```bash
-python3 inference/cluster.py serve --bin-dir ../llama.cpp/build/bin --model /models/model.gguf --workers 192.168.1.11:50052,192.168.1.12:50052 --tensor-split 1,1 --context 2048 --port 8081
+python -m pip install -r inference/requirements-onnx.txt
+# yoki:
+python -m pip install -r inference/requirements-torch.txt
+python -m pip install -r inference/requirements-tensorflow.txt
 ```
 
-`--tensor-split 1,2` ikkinchi worker'ga taxminan ikki hissa ko'p model qatlamlari ajratadi. Qatlamlar butun holda taqsimlanadi; juda kichik modelda barcha worker'ga qatlam tushmasligi mumkin. Flag berilmasa upstream mavjud xotiraga qarab taqsimlaydi. Launcher worker TCP portlarini tekshiradi; haqiqiy RPC mosligi va xotira yetarliligini llama-server model yuklashda tekshiradi. Worker uzilsa avtomatik tiklash yo'q: worker'ni, keyin model serverini qayta ishga tushiring.
+CPU uchun PyTorch wheel'larini alohida o'rnatish mumkin: `python -m pip install torch --index-url https://download.pytorch.org/whl/cpu`. So'ng `requirements-torch.txt` qolgan bog'liqliklarni o'rnatadi.
 
-`--n-gpu-layers 999` upstream'ning RPC qurilmalariga qatlamlarni yuborish flagidir. Worker `--device CPU` bilan ishlagani va yig'ishda GPU backend'lar o'chirilgani sababli hisoblash CPU'da bajariladi. Server logida **ikkala RPC manziliga model buffer/qatlamlari ajratilganini** tekshiring.
+Quyidagi misolda birinchi worker `encoder.onnx`, ikkinchisi `head.onnx` qismini bajaradi. [worker-encoder.json](examples/worker-encoder.json), [worker-head.json](examples/worker-head.json) va [pipeline.json](examples/pipeline.json) namunalari tayyor. Model yo'llari worker manifesti joylashgan katalogga nisbatan olinadi.
 
-API: `http://127.0.0.1:8081`. Go backend'ning `8080` porti bilan to'qnashmaydi. Model yuklanib tayyor bo'lgach:
+Birinchi kompyuterga `worker-encoder.json` va `encoder.onnx` fayllarini ko'chiring:
 
 ```bash
-curl http://127.0.0.1:8081/health
-curl http://127.0.0.1:8081/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"user","content":"Salom!"}],"max_tokens":64}'
+python inference/cluster.py worker --backend pipeline --manifest /models/worker-encoder.json --host 192.168.1.11 --port 50052 --threads 4
 ```
 
-Chat uchun modelning chat template'i kerak. Oddiy completion modelida `/completion` ga `{"prompt":"Once upon a time","n_predict":32}` yuboring. Boshqa kompyuterga HTTP API ochish uchun `serve --host LAN_IP` ishlating va kirishni o'z tarmog'ingizda cheklang.
+Ikkinchi kompyuterga `worker-head.json` va `head.onnx` fayllarini ko'chiring:
 
-## Cheklovlar
+```bash
+python inference/cluster.py worker --backend pipeline --manifest /models/worker-head.json --host 192.168.1.12 --port 50052 --threads 4
+```
 
-Bu inference (tayyor modeldan javob olish); trening emas. RAM sarfiga vaznlar, KV cache va hisoblash buffer'lari kiradi. Asosiy kompyuter ham modelni yuklash va lokal operatsiyalar uchun RAM talab qiladi; bu yechim unda model umuman sig'masligini kafolatlamaydi. Avval kichik quantized model va kichik context bilan sinang. Qatlamlar ketma-ket hisoblanadi, shuning uchun qo'shimcha kompyuter har doim tezlikni oshirmaydi. Gigabit Ethernet Wi-Fi'dan afzal.
+Asosiy kompyuterda pipeline manifestidagi manzillarni haqiqiy IP'larga almashtiring va serverni ishga tushiring:
+
+```bash
+python inference/cluster.py serve --backend pipeline --manifest /models/pipeline.json --port 8081
+```
+
+Worker manifestidagi `inputs` va `outputs` model tensor nomlaridir. Pipeline bosqichidagi mapping kaliti shu nom, qiymati pipeline ichidagi tensor nomi. Masalan, `"inputs": {"hidden": "encoder_result"}` worker'ning `hidden` inputiga oldingi bosqichdan kelgan `encoder_result` tensorini uzatadi. Oraliq tensorlar worker'lar orasida asosiy server orqali o'tadi; har bir worker faqat o'zidagi model qismini yuklaydi.
+
+### Tayyor kichik ONNX misoli
+
+Bu demo `y = 2*x + 1` hisobini ikki model qismiga ajratadi. Model fayllarini yaratish uchun `onnx` paketi ham kerak:
+
+```bash
+python -m pip install onnx
+python inference/examples/create_onnx_demo.py --output onnx-demo
+```
+
+`onnx-demo/` ichida ikki model va uchta manifest yaratiladi. Yuqoridagi tartibda kompyuterlarga ko'chiring. Serverga tensor yuboring:
+
+```bash
+curl http://127.0.0.1:8081/v1/infer -H 'Content-Type: application/json' -d '{"inputs":{"x":{"dtype":"float32","shape":[1,2],"data":[[1,2]]}}}'
+```
+
+Natijada `y` tensori `[[3,5]]` bo'ladi. O'z modelingizda ham avval bir kompyuterdagi to'liq model natijasini pipeline natijasi bilan solishtiring.
+
+## Hugging Face checkpoint'lari
+
+`export_hf.py` **GPT2, Llama, Qwen2 va Mistral** oilalarining oddiy dense causal LM checkpoint'larini alohida TorchScript qismlariga ajratadi. GGUF'ga aylantirish talab qilinmaydi. Kvantlangan HF checkpoint, dynamic RoPE/LongRoPE, custom model kodi yoki boshqa arxitektura uchun mos `python` adapter kerak. Eksport paytida to'liq model vaqtincha FP32 ko'rinishida RAM'ga yuklanadi; keyin worker'lar faqat o'z qismlarini yuklaydi.
+
+```bash
+python -m pip install -r inference/requirements-hf.txt
+python inference/export_hf.py --model /models/my-hf-model --output hf-parts --workers http://192.168.1.11:50052,http://192.168.1.12:50052
+```
+
+Eksport qilingan til modelining standart chiqishi faqat oxirgi pozitsiyaning logits'i (`[batch, 1, vocab]`); bu tarmoqdan o'tadigan ma'lumotni kamaytiradi. Butun ketma-ketlik logits'i kerak bo'lsa, eksportga `--full-logits` qo'shing.
+
+Har bir kompyuterga tegishli `stage-N.pt` va `worker-N.json` ni bir katalogga ko'chiring, keyin `worker --backend pipeline --manifest worker-N.json` bilan boshlang. Asosiy kompyuterda eksport qilingan `pipeline.json` ishlatiladi. Agar manba modelda tokenizer bo'lsa, eksportchi uni `hf-parts/tokenizer/` ga saqlaydi:
+
+```bash
+python inference/cluster.py serve --backend pipeline --manifest hf-parts/pipeline.json --tokenizer hf-parts/tokenizer --port 8081
+```
+
+Tokenizer ulangan serverda `/v1/completions` orqali matn yuborish mumkin. `/v1/chat/completions` uchun tokenizer'da chat template ham bo'lishi kerak. Tokenizersiz `/v1/infer` sonli tensor API'si ishlaydi.
+
+```bash
+curl http://127.0.0.1:8081/v1/completions -H 'Content-Type: application/json' -d '{"prompt":"Salom","max_tokens":32,"temperature":0}'
+```
+
+Hozir matn API'si `temperature=0` (greedy), `max_tokens` 1–256 va bitta padding'siz ketma-ketlikni qo'llaydi. Streaming va KV cache yo'q; har bir yangi token uchun to'liq context qayta hisoblanadi. `--context` prompt va javob uchun umumiy limitni belgilaydi; server uni eksport manifestidagi model context chegarasi bilan ham cheklaydi.
+
+## Boshqa modelni adapter orqali ulash
+
+Worker manifestida `engine` ga `python`, `factory` ga o'rnatilgan Python modulidagi funksiya ko'rsatiladi:
+
+```json
+{
+  "version": 1,
+  "stages": [{
+    "id": "custom_stage",
+    "engine": "python",
+    "factory": "my_model_adapter:load_stage",
+    "inputs": ["x"],
+    "outputs": ["hidden"],
+    "model": "weights.safetensors",
+    "options": {"architecture": "my_encoder"}
+  }]
+}
+```
+
+`load_stage` funksiya `config=...`, `root=Path(...)`, `threads=...` keyword argumentlarini qabul qiladi va `run(inputs)` metodi bor obyekt qaytaradi. `inputs` va natija `dict[str, numpy.ndarray]` bo'ladi. Funksiya model arxitekturasini yaratadi, mos loader bilan vaznlarni o'qiydi va CPU'da kerakli qismni bajaradi. Shu yo'l orqali xom PyTorch state_dict, safetensors, boshqa framework yoki format ulanadi. Adapter moduli worker'da o'rnatilgan va import qilinadigan bo'lishi kerak.
+
+Pipeline transporti boolean, integer va floating tensorlarni tashiydi. Matn, rasm yoki audio faylini mos tensorlarga aylantirish modelning preprocessing qismida yoki mijozda bajariladi.
+
+Model, manifest va adapter kodini administrator oldindan joylaydi. HTTP so'rov orqali yangi fayl yoki Python kod yuklanmaydi. Faqat ishonchli model artefaktlari va adapterlardan foydalaning.
+
+## Ulanish, xotira va cheklovlar
+
+Standart tinglash manzili `127.0.0.1`. Boshqa kompyuterlar uchun aniq LAN/VPN IP yozing. Pipeline uchun ixtiyoriy umumiy token `SDRIVE_INFERENCE_TOKEN` muhit o'zgaruvchisida worker'lar va asosiy serverda bir xil o'rnatiladi. Mijoz so'roviga `Authorization: Bearer ...` header'i qo'shiladi. HTTP tokenni shifrlamaydi: ishonchli LAN/VPN yoki HTTPS reverse proxy ishlating. GGUF RPC ulanishi alohida protokol; [uning tarmoq talablari](GGUF.md) farq qiladi.
+
+Bu tayyor modelni bajarish — inference; trening emas. CPU worker'lar o'z qismining vaznlari va hisoblash buffer'lari uchun RAM talab qiladi. Bitta so'rovdagi tensorlarning jami xom hajmi 32 MiB, HTTP body limiti 64 MiB. Katta aktivatsiyalar uchun context yoki batch hajmini kamaytiring. Oraliq tensor hajmi va tarmoq tezligi natijaga ta'sir qiladi; ko'proq kompyuter doim tezroq degani emas. Worker uzilganda so'rov xato qaytaradi; avtomatik ko'chirish yoki model qayta bo'lish hozir yo'q.
 
 ## Tekshirish
 
 ```bash
-python3 -m unittest discover -s inference/tests -v
-python3 inference/cluster.py worker --bin-dir ../llama.cpp/build/bin --dry-run
+python -m unittest discover -s inference/tests -v
 ```
 
-`--dry-run` jarayonni boshlamasdan buyruq argumentlarini JSON shaklida chiqaradi. Unit testlar launcher validatsiyasini tekshiradi; haqiqiy tarqatilgan hisoblash uchun ikkita worker, model yuklash loglari va muvaffaqiyatli completion kerak.
-
-Upstream: https://github.com/ggml-org/llama.cpp/tree/8ca4060b7e30e76baaa5670ee1ec1b760b7f8552/tools/rpc
-
-Ikkita lokal RPC jarayoni bilan haqiqiy model smoke testi:
-
-```bash
-python3 inference/smoke_test.py --bin-dir ../llama.cpp/build/bin --model /models/stories15M-q4_0.gguf
-```
-
-Test har ikkala worker'da model buffer'i borligini va bo'sh bo'lmagan completion qaytishini tekshiradi; yakunda jarayonlarni to'xtatadi. CI shu testni kichik TinyStories modeli bilan Linux'da bajaradi. Bu test alohida jismoniy kompyuterlar orasidagi tarmoq tezligini o'lchamaydi.
+Runtime talab qiladigan testlar tegishli paket bo'lmasa o'tkazib yuboriladi. Haqiqiy model sinovi natijalari [VERIFICATION.md](VERIFICATION.md) da qayd qilinadi. GGUF'ning ikkita worker smoke testi [alohida qo'llanmada](GGUF.md#tekshirish).
